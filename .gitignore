@@ -1,0 +1,31 @@
+# secrets — never committed (see TECH-PLAN.md §6.2)
+.env
+.env.*
+!.env.example
+backend/keys/
+
+# build & deps
+node_modules/
+.next/
+dist/
+backend/bin/
+tmp/
+
+# test & profiling output
+coverage/
+*.out
+*.test
+playwright-report/
+test-results/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# local scratch
+scratch/
+*.local.*
+
+# specs destined for the shrt/scrt repos, not this one
+redesigns/
