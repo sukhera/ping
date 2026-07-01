@@ -3,7 +3,7 @@ tmp_dir = "tmp"
 
 [build]
 cmd = "go build -o ./tmp/ping ./cmd/ping"
-bin = "tmp/ping"
+entrypoint = "tmp/ping"
 delay = 200
 exclude_dir = ["tmp", "bin", "keys", "db/migrations"]
 include_ext = ["go", "sql"]
