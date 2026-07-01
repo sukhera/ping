@@ -1,0 +1,17 @@
+root = "."
+tmp_dir = "tmp"
+
+[build]
+cmd = "go build -o ./tmp/ping ./cmd/ping"
+entrypoint = "tmp/ping"
+delay = 200
+exclude_dir = ["tmp", "bin", "keys", "db/migrations"]
+include_ext = ["go", "sql"]
+exclude_regex = ["_test\\.go"]
+stop_on_error = true
+
+[log]
+time = false
+
+[misc]
+clean_on_exit = true

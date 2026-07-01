@@ -1,0 +1,69 @@
+name: CI
+
+# Dormant until GitHub Actions billing is re-enabled on this repo — the real gate today is
+# lefthook (see TECH-PLAN.md §6.4). This workflow runs exactly `make verify` plus the
+# integration and E2E suites required by the PR checklist, so enabling billing later
+# changes nothing about the workflow itself.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ping
+          POSTGRES_PASSWORD: ping
+          POSTGRES_DB: ping
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache-dependency-path: backend/go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install golangci-lint
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+
+      - name: Install frontend deps
+        run: cd frontend && npm ci
+
+      - name: make verify
+        run: make verify
+
+      - name: make test-integration
+        env:
+          DATABASE_URL: postgres://ping:ping@localhost:5432/ping?sslmode=disable
+          REDIS_URL: redis://localhost:6379/0
+        run: make test-integration
+
+      - name: Playwright E2E
+        run: cd frontend && npx playwright install --with-deps && npm run e2e

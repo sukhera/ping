@@ -9,7 +9,9 @@ node_modules/
 .next/
 dist/
 backend/bin/
+backend/ping
 tmp/
+*.tsbuildinfo
 
 # test & profiling output
 coverage/
@@ -26,6 +28,12 @@ test-results/
 # local scratch
 scratch/
 *.local.*
+
+# database dumps / backups (per TECH-PLAN.md §6.2)
+*.dump
+*.sql.gz
+/dumps/
+/backups/
 
 # specs destined for the shrt/scrt repos, not this one
 redesigns/
