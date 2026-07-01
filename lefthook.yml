@@ -1,0 +1,27 @@
+commit-msg:
+  commands:
+    conventional:
+      run: |
+        grep -qE '^(feat|fix|docs|test|refactor|perf|build|chore)(\([a-z]+\))?!?: .{1,72}' {1} \
+          || (echo "✗ not a conventional commit: type(scope): summary" && exit 1)
+
+pre-commit:
+  parallel: true
+  commands:
+    gitleaks:
+      run: gitleaks protect --staged --redact --config .gitleaks.toml
+    go-fmt:
+      glob: "backend/**/*.go"
+      run: gofmt -l {staged_files} | tee /dev/stderr | (! grep .)
+    go-lint-fast:
+      glob: "backend/**/*.go"
+      run: cd backend && golangci-lint run --fast-only ./...
+    fe-lint:
+      glob: "frontend/**/*.{ts,tsx}"
+      root: "frontend/"
+      run: npx eslint {staged_files}
+
+pre-push:
+  commands:
+    verify:
+      run: make verify

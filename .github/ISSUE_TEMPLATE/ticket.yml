@@ -1,0 +1,52 @@
+name: Ticket
+description: A PING-XXX ticket, per TECH-PLAN.md §8 format
+title: "PING-XXX: <title>"
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        See `TECH-PLAN.md` §8 for the canonical ticket definitions. This form is for tickets not already listed there, or to re-file one as a standalone issue.
+
+  - type: input
+    id: deps
+    attributes:
+      label: Dependencies
+      description: Ticket(s) that must merge first (— if none)
+      placeholder: "PING-002"
+    validations:
+      required: true
+
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What this ticket delivers and why.
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Key implementation notes
+      description: Architecture pointers, files touched, standards to follow (see relevant skill in .claude/skills/).
+
+  - type: textarea
+    id: ac
+    attributes:
+      label: Acceptance criteria
+      description: Checklist — this is the definition of done.
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: implicit
+    attributes:
+      label: Implicit for every ticket (§8)
+      options:
+        - label: Tests per §5 (unit; integration if it touches DB/workers)
+        - label: "`make verify` green"
+        - label: Docs touched if behavior/config changed
