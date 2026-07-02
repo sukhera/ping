@@ -1,4 +1,5 @@
 ## What & why
+Closes #XXX
 Refs: PING-XXX
 
 ## Checklist

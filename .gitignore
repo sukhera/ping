@@ -37,3 +37,6 @@ scratch/
 
 # specs destined for the shrt/scrt repos, not this one
 redesigns/
+
+# personal skills library — lives at ~/claude-skills, staged here temporarily
+claude-skills/
