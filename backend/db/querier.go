@@ -32,9 +32,26 @@ type Querier interface {
 	GetAPIKeyByHash(ctx context.Context, keyHash string) (ApiKey, error)
 	GetMonitorByID(ctx context.Context, id pgtype.UUID) (Monitor, error)
 	GetMonitorBySlug(ctx context.Context, slug string) (Monitor, error)
+	// Ingest fast path (PING-008): fetch the monitor and lock its row for the rest
+	// of the transaction. Plain FOR UPDATE (block, don't skip) — every ping must be
+	// processed, and the lock serializes concurrent pings on the same slug so the
+	// read-state / transition / write is atomic (no duplicate recovery/down rows).
+	GetMonitorBySlugForUpdate(ctx context.Context, slug string) (Monitor, error)
 	GetRefreshTokenByHash(ctx context.Context, tokenHash string) (RefreshToken, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id pgtype.UUID) (User, error)
+	// Outbox row for the alerter worker (PING-012). status defaults 'pending' and
+	// next_attempt_at defaults now(): the ingest fast path only enqueues, it never
+	// dispatches. channel is the sentinel 'default' until PING-012 introduces real
+	// notification channels and fans a transition out across them.
+	InsertAlert(ctx context.Context, arg InsertAlertParams) (Alert, error)
+	// Ingest fast path (PING-008): every ping records exactly one checkin row.
+	// source_ip (INET) / user_agent / body are nullable; the store passes NULL
+	// when absent. body is already truncated to 10 KB by the server handler.
+	InsertCheckin(ctx context.Context, arg InsertCheckinParams) (Checkin, error)
+	// Timeline events for a monitor (state transitions, config changes, etc.).
+	// meta defaults to an empty object when the caller passes NULL.
+	InsertEvent(ctx context.Context, arg InsertEventParams) (Event, error)
 	ListAPIKeysByUser(ctx context.Context, userID pgtype.UUID) ([]ApiKey, error)
 	ListMonitorsByUser(ctx context.Context, userID pgtype.UUID) ([]Monitor, error)
 	// Cursor pagination on (created_at, id) rather than OFFSET: created_at alone
@@ -58,6 +75,10 @@ type Querier interface {
 	// Pause/Resume/Delete — a foreign monitor_id updates zero rows rather than
 	// erroring, so the store layer must check RowsAffected/pgx.ErrNoRows.
 	UpdateMonitor(ctx context.Context, arg UpdateMonitorParams) (Monitor, error)
+	// Ingest fast path (PING-008): apply a check-in's effect to the monitor row we
+	// already hold locked via GetMonitorBySlugForUpdate. next_deadline is NULL on a
+	// fail; paused_at is always cleared (any check-in auto-resumes the monitor).
+	UpdateMonitorOnCheckin(ctx context.Context, arg UpdateMonitorOnCheckinParams) error
 }
 
 var _ Querier = (*Queries)(nil)

@@ -7,6 +7,8 @@ package db
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const claimPendingAlerts = `-- name: ClaimPendingAlerts :many
@@ -48,4 +50,37 @@ func (q *Queries) ClaimPendingAlerts(ctx context.Context, limit int32) ([]Alert,
 		return nil, err
 	}
 	return items, nil
+}
+
+const insertAlert = `-- name: InsertAlert :one
+INSERT INTO alerts (monitor_id, event_id, channel)
+VALUES ($1, $2, $3)
+RETURNING id, monitor_id, event_id, channel, status, attempts, next_attempt_at, sent_at, created_at
+`
+
+type InsertAlertParams struct {
+	MonitorID pgtype.UUID `json:"monitor_id"`
+	EventID   int64       `json:"event_id"`
+	Channel   string      `json:"channel"`
+}
+
+// Outbox row for the alerter worker (PING-012). status defaults 'pending' and
+// next_attempt_at defaults now(): the ingest fast path only enqueues, it never
+// dispatches. channel is the sentinel 'default' until PING-012 introduces real
+// notification channels and fans a transition out across them.
+func (q *Queries) InsertAlert(ctx context.Context, arg InsertAlertParams) (Alert, error) {
+	row := q.db.QueryRow(ctx, insertAlert, arg.MonitorID, arg.EventID, arg.Channel)
+	var i Alert
+	err := row.Scan(
+		&i.ID,
+		&i.MonitorID,
+		&i.EventID,
+		&i.Channel,
+		&i.Status,
+		&i.Attempts,
+		&i.NextAttemptAt,
+		&i.SentAt,
+		&i.CreatedAt,
+	)
+	return i, err
 }
