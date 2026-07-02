@@ -44,3 +44,112 @@ func (q *Queries) InsertEvent(ctx context.Context, arg InsertEventParams) (Event
 	)
 	return i, err
 }
+
+const listEventsByMonitorPage = `-- name: ListEventsByMonitorPage :many
+SELECT id, monitor_id, type, message, meta, created_at
+FROM events
+WHERE monitor_id = $1
+  AND ($2::text IS NULL OR type = $2)
+  AND ($3::bigint IS NULL OR id < $3::bigint)
+ORDER BY id DESC
+LIMIT $4
+`
+
+type ListEventsByMonitorPageParams struct {
+	MonitorID pgtype.UUID `json:"monitor_id"`
+	EventType pgtype.Text `json:"event_type"`
+	CursorID  pgtype.Int8 `json:"cursor_id"`
+	PageLimit int32       `json:"page_limit"`
+}
+
+// Per-monitor event feed (PING-010): ownership is checked in the handler, so
+// this filters by monitor_id only (plus optional type + cursor). Uses
+// idx_events_monitor (monitor_id, created_at DESC).
+func (q *Queries) ListEventsByMonitorPage(ctx context.Context, arg ListEventsByMonitorPageParams) ([]Event, error) {
+	rows, err := q.db.Query(ctx, listEventsByMonitorPage,
+		arg.MonitorID,
+		arg.EventType,
+		arg.CursorID,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Event{}
+	for rows.Next() {
+		var i Event
+		if err := rows.Scan(
+			&i.ID,
+			&i.MonitorID,
+			&i.Type,
+			&i.Message,
+			&i.Meta,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listEventsByUserPage = `-- name: ListEventsByUserPage :many
+SELECT e.id, e.monitor_id, e.type, e.message, e.meta, e.created_at
+FROM events e
+JOIN monitors m ON m.id = e.monitor_id
+WHERE m.user_id = $1
+  AND ($2::uuid IS NULL OR e.monitor_id = $2::uuid)
+  AND ($3::text IS NULL OR e.type = $3)
+  AND ($4::bigint IS NULL OR e.id < $4::bigint)
+ORDER BY e.id DESC
+LIMIT $5
+`
+
+type ListEventsByUserPageParams struct {
+	UserID    pgtype.UUID `json:"user_id"`
+	MonitorID pgtype.UUID `json:"monitor_id"`
+	EventType pgtype.Text `json:"event_type"`
+	CursorID  pgtype.Int8 `json:"cursor_id"`
+	PageLimit int32       `json:"page_limit"`
+}
+
+// Global event feed (PING-010): the caller's events across all their monitors,
+// newest first, with optional monitor and type filters. Cursor is the BIGSERIAL
+// id (monotonic), so id < cursor paginates strictly. Ordering by id DESC uses
+// idx_events_id.
+func (q *Queries) ListEventsByUserPage(ctx context.Context, arg ListEventsByUserPageParams) ([]Event, error) {
+	rows, err := q.db.Query(ctx, listEventsByUserPage,
+		arg.UserID,
+		arg.MonitorID,
+		arg.EventType,
+		arg.CursorID,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Event{}
+	for rows.Next() {
+		var i Event
+		if err := rows.Scan(
+			&i.ID,
+			&i.MonitorID,
+			&i.Type,
+			&i.Message,
+			&i.Meta,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

@@ -59,3 +59,33 @@ Until PING-012 introduces real notification channels, outbox rows use a sentinel
 Pings are rate-limited **per source IP** (generous: 120/minute), sharing the
 Redis fixed-window limiter used by auth. It **fails open** — a Redis outage never
 blocks legitimate check-ins. Over the limit returns `429` with `Retry-After`.
+
+## Pause / resume / mute (PING-010)
+
+All authenticated (Bearer access token) and owner-scoped: acting on another
+user's monitor returns `403`, unauthenticated returns `401`. Each returns `200`
+with the updated monitor body and records a timeline event.
+
+| Endpoint | Effect |
+| --- | --- |
+| `POST /api/v1/monitors/{id}/pause` | Sets the paused flag. **`state` is left untouched** — paused is a flag, not a state; `display_state` becomes `"paused"`. The scheduler stops evaluating it (no late/down while paused), but check-ins still record. |
+| `POST /api/v1/monitors/{id}/resume` | A clean restart: clears the flag, sets `state` to `up`, and **re-arms `next_deadline` from now**, so a monitor paused past its old deadline does not trip late/down the instant it resumes. |
+| `POST /api/v1/monitors/{id}/mute` / `.../unmute` | Toggles `alerts_muted`. Transitions are still recorded; alert dispatch (PING-012) will respect the flag. |
+
+### Auto-resume on ping
+
+Monitors have an `auto_resume` field (boolean, default `true`, settable on
+create/update). When `true`, a successful check-in clears the paused flag
+(auto-resume). When `false`, a check-in on a paused monitor still records and
+re-arms the deadline, but the monitor **stays paused** until explicitly resumed.
+
+## Event feed (PING-010)
+
+Immutable timeline of everything that happened to a monitor: state transitions
+(`up`, `late`, `down`), `pause`, `resume`, `mute`, `unmute`, and `config_change`
+(with a `meta.fields` list of changed fields). Cursor-paginated by the opaque
+`next_cursor` (newest first).
+
+- `GET /api/v1/events` — global feed across all the caller's monitors. Filters:
+  `?monitor=<id>`, `?type=<event-type>`. Pagination: `?cursor=`, `?limit=` (default 20, max 100).
+- `GET /api/v1/monitors/{id}/events` — one monitor's feed (owner-scoped). Filter: `?type=`.

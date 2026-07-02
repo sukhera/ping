@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -19,6 +20,13 @@ type fakeMonitorStore struct {
 	listMonitorsFn  func(ctx context.Context, userID, cursor string, limit int32) (store.MonitorPage, error)
 	updateMonitorFn func(ctx context.Context, id, callerUserID string, p store.UpdateMonitorParams) (store.Monitor, error)
 	deleteMonitorFn func(ctx context.Context, id, callerUserID string) error
+
+	pauseMonitorFn        func(ctx context.Context, id, callerUserID string) (store.Monitor, error)
+	resumeMonitorFn       func(ctx context.Context, id, callerUserID string, now time.Time) (store.Monitor, error)
+	muteMonitorFn         func(ctx context.Context, id, callerUserID string) (store.Monitor, error)
+	unmuteMonitorFn       func(ctx context.Context, id, callerUserID string) (store.Monitor, error)
+	listEventsByUserFn    func(ctx context.Context, userID, monitorID, eventType, cursor string, limit int32) (store.EventPage, error)
+	listEventsByMonitorFn func(ctx context.Context, monitorID, eventType, cursor string, limit int32) (store.EventPage, error)
 }
 
 func (f *fakeMonitorStore) CreateMonitor(ctx context.Context, p store.CreateMonitorParams) (store.Monitor, error) {
@@ -35,6 +43,24 @@ func (f *fakeMonitorStore) UpdateMonitor(ctx context.Context, id, callerUserID s
 }
 func (f *fakeMonitorStore) DeleteMonitor(ctx context.Context, id, callerUserID string) error {
 	return f.deleteMonitorFn(ctx, id, callerUserID)
+}
+func (f *fakeMonitorStore) PauseMonitor(ctx context.Context, id, callerUserID string) (store.Monitor, error) {
+	return f.pauseMonitorFn(ctx, id, callerUserID)
+}
+func (f *fakeMonitorStore) ResumeMonitor(ctx context.Context, id, callerUserID string, now time.Time) (store.Monitor, error) {
+	return f.resumeMonitorFn(ctx, id, callerUserID, now)
+}
+func (f *fakeMonitorStore) MuteMonitor(ctx context.Context, id, callerUserID string) (store.Monitor, error) {
+	return f.muteMonitorFn(ctx, id, callerUserID)
+}
+func (f *fakeMonitorStore) UnmuteMonitor(ctx context.Context, id, callerUserID string) (store.Monitor, error) {
+	return f.unmuteMonitorFn(ctx, id, callerUserID)
+}
+func (f *fakeMonitorStore) ListEventsByUser(ctx context.Context, userID, monitorID, eventType, cursor string, limit int32) (store.EventPage, error) {
+	return f.listEventsByUserFn(ctx, userID, monitorID, eventType, cursor, limit)
+}
+func (f *fakeMonitorStore) ListEventsByMonitor(ctx context.Context, monitorID, eventType, cursor string, limit int32) (store.EventPage, error) {
+	return f.listEventsByMonitorFn(ctx, monitorID, eventType, cursor, limit)
 }
 
 // withChiURLParam and withAuthedUser build a request as if it had already

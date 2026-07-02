@@ -161,10 +161,18 @@ func applyFail(ctx context.Context, q *db.Queries, m db.Monitor, now time.Time, 
 // transitions that should not page anyone — e.g. the intermediate up→late step,
 // which is informational only (an alert fires on →down, not on lateness).
 func recordEvent(ctx context.Context, q *db.Queries, monitorID pgtype.UUID, eventType, message string) (db.Event, error) {
+	return recordEventMeta(ctx, q, monitorID, eventType, message, nil)
+}
+
+// recordEventMeta is recordEvent with a JSON meta payload (nil → '{}'). Used
+// for events that carry structured detail, e.g. config_change's changed-field
+// list (PING-010).
+func recordEventMeta(ctx context.Context, q *db.Queries, monitorID pgtype.UUID, eventType, message string, meta []byte) (db.Event, error) {
 	event, err := q.InsertEvent(ctx, db.InsertEventParams{
 		MonitorID: monitorID,
 		Type:      eventType,
 		Message:   message,
+		Meta:      meta,
 	})
 	if err != nil {
 		return db.Event{}, fmt.Errorf("store: insert event: %w", err)

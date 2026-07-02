@@ -12,7 +12,7 @@ import (
 )
 
 const claimDueMonitors = `-- name: ClaimDueMonitors :many
-SELECT id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at FROM monitors
+SELECT id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at, auto_resume FROM monitors
 WHERE next_deadline < $1
   AND state IN ('up', 'late')
   AND paused_at IS NULL
@@ -66,6 +66,7 @@ func (q *Queries) ClaimDueMonitors(ctx context.Context, arg ClaimDueMonitorsPara
 			&i.PausedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.AutoResume,
 		); err != nil {
 			return nil, err
 		}
@@ -78,7 +79,7 @@ func (q *Queries) ClaimDueMonitors(ctx context.Context, arg ClaimDueMonitorsPara
 }
 
 const claimDueProbes = `-- name: ClaimDueProbes :many
-SELECT id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at FROM monitors
+SELECT id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at, auto_resume FROM monitors
 WHERE next_probe_at < now()
   AND kind = 'http'
   AND paused_at IS NULL
@@ -124,6 +125,7 @@ func (q *Queries) ClaimDueProbes(ctx context.Context, limit int32) ([]Monitor, e
 			&i.PausedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.AutoResume,
 		); err != nil {
 			return nil, err
 		}
@@ -139,15 +141,17 @@ const createMonitor = `-- name: CreateMonitor :one
 INSERT INTO monitors (
     user_id, kind, slug, name,
     schedule_kind, period_s, cron_expr, tz, grace_s,
-    url, method, interval_s, timeout_s, fail_threshold, http_config
+    url, method, interval_s, timeout_s, fail_threshold, http_config,
+    auto_resume
 ) VALUES (
     $1, $2, $3, $4,
     $5, $6, $7,
     COALESCE(NULLIF($8::text, ''), 'UTC'), $9,
     $10, $11, $12, $13, $14,
-    COALESCE($15::jsonb, '{}'::jsonb)
+    COALESCE($15::jsonb, '{}'::jsonb),
+    COALESCE($16::boolean, true)
 )
-RETURNING id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at
+RETURNING id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at, auto_resume
 `
 
 type CreateMonitorParams struct {
@@ -166,6 +170,7 @@ type CreateMonitorParams struct {
 	TimeoutS      pgtype.Int4 `json:"timeout_s"`
 	FailThreshold pgtype.Int4 `json:"fail_threshold"`
 	HttpConfig    []byte      `json:"http_config"`
+	AutoResume    pgtype.Bool `json:"auto_resume"`
 }
 
 func (q *Queries) CreateMonitor(ctx context.Context, arg CreateMonitorParams) (Monitor, error) {
@@ -185,6 +190,7 @@ func (q *Queries) CreateMonitor(ctx context.Context, arg CreateMonitorParams) (M
 		arg.TimeoutS,
 		arg.FailThreshold,
 		arg.HttpConfig,
+		arg.AutoResume,
 	)
 	var i Monitor
 	err := row.Scan(
@@ -213,6 +219,7 @@ func (q *Queries) CreateMonitor(ctx context.Context, arg CreateMonitorParams) (M
 		&i.PausedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.AutoResume,
 	)
 	return i, err
 }
@@ -238,7 +245,7 @@ func (q *Queries) DeleteMonitor(ctx context.Context, arg DeleteMonitorParams) (i
 }
 
 const getMonitorByID = `-- name: GetMonitorByID :one
-SELECT id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at FROM monitors
+SELECT id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at, auto_resume FROM monitors
 WHERE id = $1
 `
 
@@ -271,12 +278,13 @@ func (q *Queries) GetMonitorByID(ctx context.Context, id pgtype.UUID) (Monitor, 
 		&i.PausedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.AutoResume,
 	)
 	return i, err
 }
 
 const getMonitorBySlug = `-- name: GetMonitorBySlug :one
-SELECT id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at FROM monitors
+SELECT id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at, auto_resume FROM monitors
 WHERE slug = $1
 `
 
@@ -309,12 +317,13 @@ func (q *Queries) GetMonitorBySlug(ctx context.Context, slug string) (Monitor, e
 		&i.PausedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.AutoResume,
 	)
 	return i, err
 }
 
 const getMonitorBySlugForUpdate = `-- name: GetMonitorBySlugForUpdate :one
-SELECT id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at FROM monitors
+SELECT id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at, auto_resume FROM monitors
 WHERE slug = $1
 FOR UPDATE
 `
@@ -352,12 +361,13 @@ func (q *Queries) GetMonitorBySlugForUpdate(ctx context.Context, slug string) (M
 		&i.PausedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.AutoResume,
 	)
 	return i, err
 }
 
 const listMonitorsByUser = `-- name: ListMonitorsByUser :many
-SELECT id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at FROM monitors
+SELECT id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at, auto_resume FROM monitors
 WHERE user_id = $1
 ORDER BY created_at DESC
 `
@@ -397,6 +407,7 @@ func (q *Queries) ListMonitorsByUser(ctx context.Context, userID pgtype.UUID) ([
 			&i.PausedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.AutoResume,
 		); err != nil {
 			return nil, err
 		}
@@ -409,7 +420,7 @@ func (q *Queries) ListMonitorsByUser(ctx context.Context, userID pgtype.UUID) ([
 }
 
 const listMonitorsByUserPage = `-- name: ListMonitorsByUserPage :many
-SELECT id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at FROM monitors
+SELECT id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at, auto_resume FROM monitors
 WHERE user_id = $1
   AND (
     $2::timestamptz IS NULL
@@ -470,6 +481,7 @@ func (q *Queries) ListMonitorsByUserPage(ctx context.Context, arg ListMonitorsBy
 			&i.PausedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.AutoResume,
 		); err != nil {
 			return nil, err
 		}
@@ -519,10 +531,57 @@ func (q *Queries) MarkMonitorLate(ctx context.Context, arg MarkMonitorLateParams
 	return err
 }
 
-const pauseMonitor = `-- name: PauseMonitor :exec
+const muteMonitor = `-- name: MuteMonitor :one
 UPDATE monitors
-SET paused_at = now()
+SET alerts_muted = true, updated_at = now()
 WHERE id = $1 AND user_id = $2
+RETURNING id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at, auto_resume
+`
+
+type MuteMonitorParams struct {
+	ID     pgtype.UUID `json:"id"`
+	UserID pgtype.UUID `json:"user_id"`
+}
+
+func (q *Queries) MuteMonitor(ctx context.Context, arg MuteMonitorParams) (Monitor, error) {
+	row := q.db.QueryRow(ctx, muteMonitor, arg.ID, arg.UserID)
+	var i Monitor
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Kind,
+		&i.Slug,
+		&i.Name,
+		&i.ScheduleKind,
+		&i.PeriodS,
+		&i.CronExpr,
+		&i.Tz,
+		&i.GraceS,
+		&i.Url,
+		&i.Method,
+		&i.IntervalS,
+		&i.TimeoutS,
+		&i.FailThreshold,
+		&i.HttpConfig,
+		&i.State,
+		&i.FailStreak,
+		&i.LastCheckinAt,
+		&i.NextDeadline,
+		&i.NextProbeAt,
+		&i.AlertsMuted,
+		&i.PausedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.AutoResume,
+	)
+	return i, err
+}
+
+const pauseMonitor = `-- name: PauseMonitor :one
+UPDATE monitors
+SET paused_at = now(), updated_at = now()
+WHERE id = $1 AND user_id = $2
+RETURNING id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at, auto_resume
 `
 
 type PauseMonitorParams struct {
@@ -530,25 +589,142 @@ type PauseMonitorParams struct {
 	UserID pgtype.UUID `json:"user_id"`
 }
 
-func (q *Queries) PauseMonitor(ctx context.Context, arg PauseMonitorParams) error {
-	_, err := q.db.Exec(ctx, pauseMonitor, arg.ID, arg.UserID)
-	return err
+// Pause (PING-010): set the flag only — state is deliberately untouched (paused
+// is a flag, not a state, per §2.3). RETURNING so the handler can echo the
+// updated monitor. Zero rows affected (foreign/missing id) => ErrNotFound.
+func (q *Queries) PauseMonitor(ctx context.Context, arg PauseMonitorParams) (Monitor, error) {
+	row := q.db.QueryRow(ctx, pauseMonitor, arg.ID, arg.UserID)
+	var i Monitor
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Kind,
+		&i.Slug,
+		&i.Name,
+		&i.ScheduleKind,
+		&i.PeriodS,
+		&i.CronExpr,
+		&i.Tz,
+		&i.GraceS,
+		&i.Url,
+		&i.Method,
+		&i.IntervalS,
+		&i.TimeoutS,
+		&i.FailThreshold,
+		&i.HttpConfig,
+		&i.State,
+		&i.FailStreak,
+		&i.LastCheckinAt,
+		&i.NextDeadline,
+		&i.NextProbeAt,
+		&i.AlertsMuted,
+		&i.PausedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.AutoResume,
+	)
+	return i, err
 }
 
-const resumeMonitor = `-- name: ResumeMonitor :exec
+const resumeMonitor = `-- name: ResumeMonitor :one
 UPDATE monitors
-SET paused_at = NULL
-WHERE id = $1 AND user_id = $2
+SET paused_at     = NULL,
+    state         = 'up',
+    next_deadline = $1,
+    updated_at    = now()
+WHERE id = $2 AND user_id = $3
+RETURNING id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at, auto_resume
 `
 
 type ResumeMonitorParams struct {
+	NextDeadline pgtype.Timestamptz `json:"next_deadline"`
+	ID           pgtype.UUID        `json:"id"`
+	UserID       pgtype.UUID        `json:"user_id"`
+}
+
+// Resume (PING-010): a clean restart — clear the flag, set state='up', and
+// re-arm next_deadline from the resume moment (computed by the caller via
+// nextDeadlineFor; NULL for non-heartbeat / unscheduled). Re-arming from now is
+// what stops a monitor paused past its deadline from tripping late/down the
+// instant it resumes (AC-2).
+func (q *Queries) ResumeMonitor(ctx context.Context, arg ResumeMonitorParams) (Monitor, error) {
+	row := q.db.QueryRow(ctx, resumeMonitor, arg.NextDeadline, arg.ID, arg.UserID)
+	var i Monitor
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Kind,
+		&i.Slug,
+		&i.Name,
+		&i.ScheduleKind,
+		&i.PeriodS,
+		&i.CronExpr,
+		&i.Tz,
+		&i.GraceS,
+		&i.Url,
+		&i.Method,
+		&i.IntervalS,
+		&i.TimeoutS,
+		&i.FailThreshold,
+		&i.HttpConfig,
+		&i.State,
+		&i.FailStreak,
+		&i.LastCheckinAt,
+		&i.NextDeadline,
+		&i.NextProbeAt,
+		&i.AlertsMuted,
+		&i.PausedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.AutoResume,
+	)
+	return i, err
+}
+
+const unmuteMonitor = `-- name: UnmuteMonitor :one
+UPDATE monitors
+SET alerts_muted = false, updated_at = now()
+WHERE id = $1 AND user_id = $2
+RETURNING id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at, auto_resume
+`
+
+type UnmuteMonitorParams struct {
 	ID     pgtype.UUID `json:"id"`
 	UserID pgtype.UUID `json:"user_id"`
 }
 
-func (q *Queries) ResumeMonitor(ctx context.Context, arg ResumeMonitorParams) error {
-	_, err := q.db.Exec(ctx, resumeMonitor, arg.ID, arg.UserID)
-	return err
+func (q *Queries) UnmuteMonitor(ctx context.Context, arg UnmuteMonitorParams) (Monitor, error) {
+	row := q.db.QueryRow(ctx, unmuteMonitor, arg.ID, arg.UserID)
+	var i Monitor
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Kind,
+		&i.Slug,
+		&i.Name,
+		&i.ScheduleKind,
+		&i.PeriodS,
+		&i.CronExpr,
+		&i.Tz,
+		&i.GraceS,
+		&i.Url,
+		&i.Method,
+		&i.IntervalS,
+		&i.TimeoutS,
+		&i.FailThreshold,
+		&i.HttpConfig,
+		&i.State,
+		&i.FailStreak,
+		&i.LastCheckinAt,
+		&i.NextDeadline,
+		&i.NextProbeAt,
+		&i.AlertsMuted,
+		&i.PausedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.AutoResume,
+	)
+	return i, err
 }
 
 const updateMonitor = `-- name: UpdateMonitor :one
@@ -566,9 +742,10 @@ SET
     timeout_s      = COALESCE($10, timeout_s),
     fail_threshold = COALESCE($11, fail_threshold),
     http_config    = COALESCE($12::jsonb, http_config),
+    auto_resume    = COALESCE($13::boolean, auto_resume),
     updated_at     = now()
-WHERE id = $13 AND user_id = $14
-RETURNING id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at
+WHERE id = $14 AND user_id = $15
+RETURNING id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at, auto_resume
 `
 
 type UpdateMonitorParams struct {
@@ -584,6 +761,7 @@ type UpdateMonitorParams struct {
 	TimeoutS      pgtype.Int4 `json:"timeout_s"`
 	FailThreshold pgtype.Int4 `json:"fail_threshold"`
 	HttpConfig    []byte      `json:"http_config"`
+	AutoResume    pgtype.Bool `json:"auto_resume"`
 	ID            pgtype.UUID `json:"id"`
 	UserID        pgtype.UUID `json:"user_id"`
 }
@@ -606,6 +784,7 @@ func (q *Queries) UpdateMonitor(ctx context.Context, arg UpdateMonitorParams) (M
 		arg.TimeoutS,
 		arg.FailThreshold,
 		arg.HttpConfig,
+		arg.AutoResume,
 		arg.ID,
 		arg.UserID,
 	)
@@ -636,6 +815,7 @@ func (q *Queries) UpdateMonitor(ctx context.Context, arg UpdateMonitorParams) (M
 		&i.PausedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.AutoResume,
 	)
 	return i, err
 }
@@ -646,7 +826,7 @@ SET state           = $1,
     last_checkin_at = $2,
     next_deadline   = $3,
     fail_streak     = $4,
-    paused_at       = NULL,
+    paused_at       = CASE WHEN auto_resume THEN NULL ELSE paused_at END,
     updated_at      = now()
 WHERE id = $5
 `
@@ -662,6 +842,11 @@ type UpdateMonitorOnCheckinParams struct {
 // Ingest fast path (PING-008): apply a check-in's effect to the monitor row we
 // already hold locked via GetMonitorBySlugForUpdate. next_deadline is NULL on a
 // fail; paused_at is always cleared (any check-in auto-resumes the monitor).
+// paused_at is cleared (auto-resume) only when the monitor's auto_resume flag is
+// set (PING-010). With auto_resume=false a check-in still records state and
+// re-arms next_deadline, but leaves paused_at set — the scheduler keeps skipping
+// it (its claims filter paused_at IS NULL), so the future deadline is inert
+// until the monitor is explicitly resumed.
 func (q *Queries) UpdateMonitorOnCheckin(ctx context.Context, arg UpdateMonitorOnCheckinParams) error {
 	_, err := q.db.Exec(ctx, updateMonitorOnCheckin,
 		arg.State,
