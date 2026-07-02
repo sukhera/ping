@@ -102,7 +102,7 @@ erDiagram
 |---|---|
 | `users` | `email` (UK), `password_hash` |
 | `api_keys` | `user_id` FK, `key_hash` (UK — plaintext never stored), `label`, `last_used_at`, `revoked_at` |
-| `monitors` | `user_id` FK, `kind` (`heartbeat\|http`), `slug` (UK), `name`, schedule: `schedule_kind` (`period\|cron`), `period_s`, `cron_expr`, `tz`, `grace_s`; http: `url`, `method`, `interval_s`, `timeout_s`, `fail_threshold`, `http_config` JSONB (headers, keyword, redirects); runtime: `state`, `fail_streak`, `last_checkin_at`, `next_deadline`, `next_probe_at`, `alerts_muted`, `paused_at` |
+| `monitors` | `user_id` FK, `kind` (`heartbeat\|http`), `slug` (UK), `name`, schedule: `schedule_kind` (`period\|cron`), `period_s`, `cron_expr`, `tz`, `grace_s`; http: `url`, `method`, `interval_s`, `timeout_s`, `fail_threshold`, `http_config` JSONB (headers, keyword, redirects); runtime: `state` (`new\|up\|late\|down` — see paused note below), `fail_streak`, `last_checkin_at`, `next_deadline`, `next_probe_at`, `alerts_muted`, `paused_at` |
 | `checkins` | `monitor_id` FK, `kind` (`success\|start\|fail`), `source_ip` INET, `user_agent`, `body` (≤ 10 KB) — BIGSERIAL PK, append-only |
 | `probe_results` | `monitor_id` FK, `ok`, `http_status`, `latency_ms`, `error`, `tls_expires_at` — BIGSERIAL, append-only |
 | `events` | `monitor_id` FK, `type`, `message`, `meta` JSONB — BIGSERIAL, immutable |
@@ -110,6 +110,8 @@ erDiagram
 | `daily_stats` | `(monitor_id, day)` PK, `checkins`, `failures`, `downtime_s`, `latency_p50`, `latency_p95` |
 
 Schema conventions (database-specialist skill): `TIMESTAMPTZ` everywhere; `NOT NULL` + `CHECK` constraints at the DB level (`kind`, `state`, `schedule_kind` as constrained TEXT — cheaper to extend than enums); FKs with explicit `ON DELETE CASCADE`; `BIGSERIAL` PKs for high-volume append tables (`checkins`, `probe_results`, `events`, `alerts`), UUIDs for entities.
+
+**Paused is a flag, not a state.** `state` holds only the evaluation lifecycle — the CHECK constraint allows exactly `new|up|late|down`. Pausing sets `paused_at` and leaves `state` untouched: resume restores the prior state with zero bookkeeping, check-in history and uptime stay coherent (PRD F1.6), and the UI renders "paused 3d ago" straight from the timestamp. The user-facing `paused` state in PRD §5 is derived (`paused_at IS NOT NULL → paused`, else `state`) — the API returns both the derived display state and the raw fields. This is also why both predicates in `idx_monitors_due` are necessary rather than redundant: `paused_at IS NULL` excludes paused monitors, `state IN ('up','late')` excludes `new` (never alerts) and `down` (already down). Resume semantics: manual resume re-arms `next_deadline` from the resume moment (never the stale pre-pause deadline); auto-resume-on-ping re-arms from the incoming check-in.
 
 Critical indexes:
 
@@ -421,7 +423,8 @@ The §2.1 loop: 15s tick, claim via `FOR UPDATE SKIP LOCKED` on the partial inde
 Event feed endpoints (global + per-monitor, cursor pagination), pause/resume/mute endpoints, auto-resume on ping (configurable per monitor, default on), config-change events.
 
 **AC**
-- [ ] Pausing stops scheduler evaluation (no late/down while paused) but check-ins still record
+- [ ] Pausing stops scheduler evaluation (no late/down while paused) but check-ins still record; `state` column is untouched by pause/resume (flag model per §2.3)
+- [ ] Manual resume re-arms `next_deadline` from the resume moment — a monitor paused past its deadline does NOT go late/down immediately on resume (test case)
 - [ ] Every state transition, pause/resume, mute, and config change appears in the feed with correct timestamps
 - [ ] Global feed filterable by monitor and event type
 
