@@ -13,18 +13,26 @@ import (
 
 const claimDueMonitors = `-- name: ClaimDueMonitors :many
 SELECT id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at FROM monitors
-WHERE next_deadline < now()
+WHERE next_deadline < $1
   AND state IN ('up', 'late')
   AND paused_at IS NULL
 ORDER BY next_deadline
-LIMIT $1
+LIMIT $2
 FOR UPDATE SKIP LOCKED
 `
 
+type ClaimDueMonitorsParams struct {
+	Now       pgtype.Timestamptz `json:"now"`
+	PageLimit int32              `json:"page_limit"`
+}
+
 // Worker scan #1: scheduler claims heartbeat monitors past their deadline.
 // Uses idx_monitors_due (next_deadline, partial WHERE state IN ('up','late') AND paused_at IS NULL).
-func (q *Queries) ClaimDueMonitors(ctx context.Context, limit int32) ([]Monitor, error) {
-	rows, err := q.db.Query(ctx, claimDueMonitors, limit)
+// The evaluation clock is passed in (sqlc.arg(now)) rather than SQL now() so the
+// claim and the in-Go transition math share one consistent instant, and tests
+// can drive it deterministically. Production passes time.Now().
+func (q *Queries) ClaimDueMonitors(ctx context.Context, arg ClaimDueMonitorsParams) ([]Monitor, error) {
+	rows, err := q.db.Query(ctx, claimDueMonitors, arg.Now, arg.PageLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -471,6 +479,44 @@ func (q *Queries) ListMonitorsByUserPage(ctx context.Context, arg ListMonitorsBy
 		return nil, err
 	}
 	return items, nil
+}
+
+const markMonitorDown = `-- name: MarkMonitorDown :exec
+UPDATE monitors
+SET state         = 'down',
+    next_deadline = NULL,
+    fail_streak   = fail_streak + 1,
+    updated_at    = now()
+WHERE id = $1
+`
+
+// Scheduler late->down (PING-009): clear the deadline and bump the fail streak.
+// paused_at untouched (see MarkMonitorLate).
+func (q *Queries) MarkMonitorDown(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, markMonitorDown, id)
+	return err
+}
+
+const markMonitorLate = `-- name: MarkMonitorLate :exec
+UPDATE monitors
+SET state         = 'late',
+    next_deadline = $1,
+    updated_at    = now()
+WHERE id = $2
+`
+
+type MarkMonitorLateParams struct {
+	NextDeadline pgtype.Timestamptz `json:"next_deadline"`
+	ID           pgtype.UUID        `json:"id"`
+}
+
+// Scheduler up->late (PING-009): re-arm next_deadline to the DOWN threshold
+// (occurrence + grace, computed by the caller) and flip state. paused_at is
+// deliberately untouched — the scheduler must never resume a paused monitor
+// (unlike UpdateMonitorOnCheckin, which auto-resumes on a real check-in).
+func (q *Queries) MarkMonitorLate(ctx context.Context, arg MarkMonitorLateParams) error {
+	_, err := q.db.Exec(ctx, markMonitorLate, arg.NextDeadline, arg.ID)
+	return err
 }
 
 const pauseMonitor = `-- name: PauseMonitor :exec

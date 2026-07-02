@@ -122,8 +122,9 @@ func TestRecordCheckin_SuccessSetsUpAndDeadline(t *testing.T) {
 	if got.State != "up" {
 		t.Errorf("state = %q, want up", got.State)
 	}
-	// period 300s + grace 60s from now.
-	wantDeadline := now.Add(360 * time.Second)
+	// next_deadline is the bare occurrence (late threshold): period 300s from
+	// now, WITHOUT grace. The scheduler adds grace when it moves to 'late'.
+	wantDeadline := now.Add(300 * time.Second)
 	if !got.NextDeadline.Valid || !got.NextDeadline.Time.Equal(wantDeadline) {
 		t.Errorf("next_deadline = %v, want %v", got.NextDeadline.Time, wantDeadline)
 	}

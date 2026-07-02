@@ -98,6 +98,65 @@ func TestNextDeadline_Period(t *testing.T) {
 	}
 }
 
+func TestNextOccurrence(t *testing.T) {
+	tests := []struct {
+		name           string
+		cfg            Config
+		lastCheckin    time.Time
+		now            time.Time
+		wantOccurrence time.Time
+	}{
+		{
+			name: "period occurrence excludes grace",
+			cfg: Config{
+				Kind: KindPeriod, Period: 15 * time.Minute, TZ: "UTC", Grace: 5 * time.Minute,
+			},
+			lastCheckin:    mustParse(t, rfc3339, "2026-01-01T00:00:00Z"),
+			now:            mustParse(t, rfc3339, "2026-01-01T00:01:00Z"),
+			wantOccurrence: mustParse(t, rfc3339, "2026-01-01T00:15:00Z"),
+		},
+		{
+			name: "period no prior checkin falls back to now",
+			cfg: Config{
+				Kind: KindPeriod, Period: time.Hour, TZ: "UTC", Grace: 10 * time.Minute,
+			},
+			lastCheckin:    time.Time{},
+			now:            mustParse(t, rfc3339, "2026-01-01T00:00:00Z"),
+			wantOccurrence: mustParse(t, rfc3339, "2026-01-01T01:00:00Z"),
+		},
+		{
+			name: "cron occurrence excludes grace",
+			cfg: Config{
+				Kind: KindCron, CronExpr: "0 4 * * *", TZ: "UTC", Grace: 30 * time.Minute,
+			},
+			lastCheckin:    mustParse(t, rfc3339, "2026-01-01T03:00:00Z"),
+			now:            mustParse(t, rfc3339, "2026-01-01T03:00:00Z"),
+			wantOccurrence: mustParse(t, rfc3339, "2026-01-01T04:00:00Z"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			occ, err := NextOccurrence(tt.cfg, tt.lastCheckin, tt.now)
+			if err != nil {
+				t.Fatalf("NextOccurrence() error = %v", err)
+			}
+			if !occ.Equal(tt.wantOccurrence) {
+				t.Errorf("NextOccurrence() = %v, want %v", occ, tt.wantOccurrence)
+			}
+			// NextDeadline must be exactly NextOccurrence + Grace — the two
+			// stay in lockstep since NextDeadline is defined in terms of it.
+			deadline, err := NextDeadline(tt.cfg, tt.lastCheckin, tt.now)
+			if err != nil {
+				t.Fatalf("NextDeadline() error = %v", err)
+			}
+			if want := occ.Add(tt.cfg.Grace); !deadline.Equal(want) {
+				t.Errorf("NextDeadline() = %v, want occurrence+grace %v", deadline, want)
+			}
+		})
+	}
+}
+
 func TestNextDeadline_Cron(t *testing.T) {
 	tests := []struct {
 		name         string

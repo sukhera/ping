@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -194,7 +195,10 @@ func TestClaimDueMonitorsUsesPartialIndex(t *testing.T) {
 		t.Fatalf("update monitor: %v", err)
 	}
 
-	claimed, err := q.ClaimDueMonitors(ctx, 10)
+	claimed, err := q.ClaimDueMonitors(ctx, db.ClaimDueMonitorsParams{
+		Now:       pgtype.Timestamptz{Time: time.Now(), Valid: true},
+		PageLimit: 10,
+	})
 	if err != nil {
 		t.Fatalf("ClaimDueMonitors: %v", err)
 	}
