@@ -31,6 +31,19 @@ openssl rsa -in backend/keys/jwt_private.pem -pubout -out backend/keys/jwt_publi
 
 `backend/keys/` is gitignored — never commit real keys. The server fails fast at startup if the configured paths don't resolve to a valid keypair.
 
+### Frontend
+
+```
+cd frontend
+echo "NEXT_PUBLIC_API_BASE_URL=http://localhost:8080" > .env.local
+npm install
+npm run dev      # http://localhost:3000, must match CORS_ALLOWED_ORIGIN in .env
+```
+
+Dark theme is the default (light/system also available via the sidebar theme toggle, persisted by `next-themes`). Design tokens live exclusively in `frontend/app/globals.css` (DESIGN.md §4-5) — raw hex colors elsewhere are rejected by an ESLint rule (`no-restricted-syntax` in `frontend/eslint.config.mjs`), enforced by the `fe-lint` pre-commit hook. The E2E suite (`frontend/e2e/`) needs the backend running too — see `frontend/e2e/README.md`.
+
+shadcn components were generated with `components.json`'s `"style": "radix-nova"` rather than the classic `"new-york"` DESIGN.md/TECH-PLAN reference by name — the shadcn CLI (v4.12+) replaced those style names with a `radix|base` + preset taxonomy and no longer offers `new-york` as a value. Functionally equivalent for our purposes since every color/spacing token is retokened in `globals.css` regardless of preset.
+
 ## Make targets
 
 | Target | Does |
