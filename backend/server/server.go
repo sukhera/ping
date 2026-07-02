@@ -2,12 +2,15 @@ package server
 
 import (
 	"context"
+	"crypto/rsa"
 	"net/http"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/sukhera/ping/store"
 )
 
 const (
@@ -19,11 +22,20 @@ const (
 )
 
 // Deps holds the dependencies handlers need. Nil fields degrade gracefully
-// where the corresponding feature is not required yet (e.g. no store package until PING-007).
+// where the corresponding feature is not required yet.
 type Deps struct {
 	DB            *pgxpool.Pool
 	Redis         *redis.Client
 	AllowedOrigin string
+
+	JWTPrivateKey    *rsa.PrivateKey
+	JWTPublicKey     *rsa.PublicKey
+	JWTAccessTTL     time.Duration
+	JWTRefreshTTL    time.Duration
+	RegistrationOpen bool
+	// CookieSecure sets the refresh cookie's Secure attribute; true in
+	// production, false so cookies work over plain http in local dev.
+	CookieSecure bool
 }
 
 func New(addr string, deps Deps) *http.Server {
@@ -36,6 +48,15 @@ func New(addr string, deps Deps) *http.Server {
 	r.Use(corsMiddleware(deps.AllowedOrigin))
 
 	r.Get("/health", healthHandler(deps))
+
+	authStore := store.New(deps.DB, deps.Redis)
+	ah := newAuthHandler(authStore, deps)
+	r.Route("/api/v1/auth", func(r chi.Router) {
+		r.Post("/register", ah.register)
+		r.Post("/login", ah.login)
+		r.Post("/refresh", ah.refresh)
+		r.Post("/logout", ah.logout)
+	})
 
 	return &http.Server{
 		Addr:              addr,

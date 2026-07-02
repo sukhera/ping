@@ -15,6 +15,22 @@ make dev         # air, live-reloading backend/cmd/ping
 
 `REGISTRATION_OPEN` in `.env` gates the register endpoint (see PING-004). Leave it `true` to create the first (and, for single-user self-hosting, only) account, then set it to `false` and restart to lock registration down. There is no separate seed/bootstrap script — the first successful registration *is* the bootstrap.
 
+When `REGISTRATION_OPEN=false`, `POST /api/v1/auth/register` returns `403 Forbidden` with `{"error": "registration is closed"}`. The frontend should show a fixed, user-facing message rather than surfacing that string directly.
+
+### Auth (JWT RS256)
+
+`POST /api/v1/auth/{register,login,refresh,logout}` issue short-lived RS256 access tokens (returned in the response body, kept in memory client-side) plus a rotating refresh token in an httpOnly cookie (`ping_refresh`, scoped to `/api/v1/auth`). Refresh tokens rotate on every use; replaying an already-rotated token revokes its entire session family (theft protection). Login/register are rate-limited to 5 attempts/minute/IP (Redis, fails open if Redis is unreachable).
+
+The API needs an RSA keypair at the paths configured by `JWT_PRIVATE_KEY_PATH` / `JWT_PUBLIC_KEY_PATH` (relative to `backend/`, the working directory the API process runs from). Generate a local dev keypair once:
+
+```
+mkdir -p backend/keys
+openssl genrsa -out backend/keys/jwt_private.pem 2048
+openssl rsa -in backend/keys/jwt_private.pem -pubout -out backend/keys/jwt_public.pem
+```
+
+`backend/keys/` is gitignored — never commit real keys. The server fails fast at startup if the configured paths don't resolve to a valid keypair.
+
 ## Make targets
 
 | Target | Does |

@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"crypto/rsa"
 	"errors"
 	"flag"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/sync/errgroup"
@@ -61,10 +63,21 @@ func run(role string) error {
 	g, ctx := errgroup.WithContext(ctx)
 
 	if role == "api" || role == "all" {
+		jwtPriv, jwtPub, err := loadRSAKeys(cfg.JWTPrivateKeyPath, cfg.JWTPublicKeyPath)
+		if err != nil {
+			return fmt.Errorf("run: load JWT keys: %w", err)
+		}
+
 		srv := server.New(fmt.Sprintf(":%d", cfg.Port), server.Deps{
-			DB:            dbPool,
-			Redis:         redisClient,
-			AllowedOrigin: cfg.CORSAllowedOrigin,
+			DB:               dbPool,
+			Redis:            redisClient,
+			AllowedOrigin:    cfg.CORSAllowedOrigin,
+			JWTPrivateKey:    jwtPriv,
+			JWTPublicKey:     jwtPub,
+			JWTAccessTTL:     cfg.JWTAccessTTL,
+			JWTRefreshTTL:    cfg.JWTRefreshTTL,
+			RegistrationOpen: cfg.RegistrationOpen,
+			CookieSecure:     cfg.Env == "production",
 		})
 
 		g.Go(func() error {
@@ -86,6 +99,33 @@ func run(role string) error {
 	// prober, and alerter loops.
 
 	return g.Wait()
+}
+
+// loadRSAKeys reads and parses the RSA keypair used to sign and verify JWT
+// access tokens. This is startup wiring (read file, parse PEM), not business
+// logic, so it lives in main rather than a dedicated package. privPath and
+// pubPath come from validated process config (JWT_PRIVATE_KEY_PATH /
+// JWT_PUBLIC_KEY_PATH), not untrusted request input.
+func loadRSAKeys(privPath, pubPath string) (*rsa.PrivateKey, *rsa.PublicKey, error) {
+	privPEM, err := os.ReadFile(privPath) //nolint:gosec
+	if err != nil {
+		return nil, nil, fmt.Errorf("read private key: %w", err)
+	}
+	priv, err := jwt.ParseRSAPrivateKeyFromPEM(privPEM)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parse private key: %w", err)
+	}
+
+	pubPEM, err := os.ReadFile(pubPath) //nolint:gosec
+	if err != nil {
+		return nil, nil, fmt.Errorf("read public key: %w", err)
+	}
+	pub, err := jwt.ParseRSAPublicKeyFromPEM(pubPEM)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parse public key: %w", err)
+	}
+
+	return priv, pub, nil
 }
 
 func setupLogger(env string) {
