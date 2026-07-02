@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -49,6 +50,7 @@ type Monitor struct {
 	NextDeadline  *time.Time
 	NextProbeAt   *time.Time
 	AlertsMuted   bool
+	AutoResume    bool
 	PausedAt      *time.Time
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
@@ -82,6 +84,9 @@ type CreateMonitorParams struct {
 	TimeoutS      *int32
 	FailThreshold *int32
 	HTTPConfig    []byte
+
+	// AutoResume: nil defaults to true (auto-resume a paused monitor on ping).
+	AutoResume *bool
 }
 
 // UpdateMonitorParams carries the fields callers may change. A nil pointer
@@ -102,6 +107,8 @@ type UpdateMonitorParams struct {
 	TimeoutS      *int32
 	FailThreshold *int32
 	HTTPConfig    []byte
+
+	AutoResume *bool // nil = unchanged
 }
 
 // CreateMonitor generates a unique slug and inserts a new monitor owned by
@@ -128,6 +135,7 @@ func (s *Store) CreateMonitor(ctx context.Context, p CreateMonitorParams) (Monit
 		TimeoutS:      int4OrNull(p.TimeoutS),
 		FailThreshold: int4OrNull(p.FailThreshold),
 		HttpConfig:    p.HTTPConfig,
+		AutoResume:    boolOrNull(p.AutoResume),
 	}
 
 	var row db.Monitor
@@ -232,30 +240,83 @@ func (s *Store) UpdateMonitor(ctx context.Context, id, callerUserID string, p Up
 		return Monitor{}, newHTTPError(ErrNotFound, http.StatusNotFound)
 	}
 
-	row, err := s.q.UpdateMonitor(ctx, db.UpdateMonitorParams{
-		ID:            idUUID,
-		UserID:        userUUID,
-		Name:          textOrNull(p.Name),
-		ScheduleKind:  textOrNull(p.ScheduleKind),
-		PeriodS:       int4OrNull(p.PeriodS),
-		CronExpr:      textOrNull(p.CronExpr),
-		Tz:            textOrNull(p.TZ),
-		GraceS:        int4OrNull(p.GraceS),
-		Url:           textOrNull(p.URL),
-		Method:        textOrNull(p.Method),
-		IntervalS:     int4OrNull(p.IntervalS),
-		TimeoutS:      int4OrNull(p.TimeoutS),
-		FailThreshold: int4OrNull(p.FailThreshold),
-		HttpConfig:    p.HTTPConfig,
+	// The update and its config_change event commit together so the timeline
+	// never shows a config change that didn't land (or vice versa).
+	var updated Monitor
+	err = s.withTx(ctx, func(q *db.Queries) error {
+		row, err := q.UpdateMonitor(ctx, db.UpdateMonitorParams{
+			ID:            idUUID,
+			UserID:        userUUID,
+			Name:          textOrNull(p.Name),
+			ScheduleKind:  textOrNull(p.ScheduleKind),
+			PeriodS:       int4OrNull(p.PeriodS),
+			CronExpr:      textOrNull(p.CronExpr),
+			Tz:            textOrNull(p.TZ),
+			GraceS:        int4OrNull(p.GraceS),
+			Url:           textOrNull(p.URL),
+			Method:        textOrNull(p.Method),
+			IntervalS:     int4OrNull(p.IntervalS),
+			TimeoutS:      int4OrNull(p.TimeoutS),
+			FailThreshold: int4OrNull(p.FailThreshold),
+			HttpConfig:    p.HTTPConfig,
+			AutoResume:    boolOrNull(p.AutoResume),
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return newHTTPError(ErrNotFound, http.StatusNotFound)
+			}
+			return fmt.Errorf("store: update monitor: %w", err)
+		}
+
+		// Only record a config_change when the PATCH actually changed a field —
+		// a no-op update shouldn't clutter the timeline.
+		if meta, changed := changedFieldsMeta(p); changed {
+			if _, err := recordEventMeta(ctx, q, row.ID, "config_change", "Configuration updated", meta); err != nil {
+				return err
+			}
+		}
+		updated = toMonitor(row)
+		return nil
 	})
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return Monitor{}, newHTTPError(ErrNotFound, http.StatusNotFound)
-		}
-		return Monitor{}, fmt.Errorf("store: update monitor: %w", err)
+		return Monitor{}, err
 	}
+	return updated, nil
+}
 
-	return toMonitor(row), nil
+// changedFieldsMeta builds the {"fields": [...]} meta payload for a
+// config_change event, listing which settable fields the PATCH carried. The
+// bool is false when no field changed, so the caller can skip the event.
+func changedFieldsMeta(p UpdateMonitorParams) ([]byte, bool) {
+	var fields []string
+	add := func(name string, changed bool) {
+		if changed {
+			fields = append(fields, name)
+		}
+	}
+	add("name", p.Name != "")
+	add("schedule_kind", p.ScheduleKind != "")
+	add("period_s", p.PeriodS != nil)
+	add("cron_expr", p.CronExpr != "")
+	add("tz", p.TZ != "")
+	add("grace_s", p.GraceS != nil)
+	add("url", p.URL != "")
+	add("method", p.Method != "")
+	add("interval_s", p.IntervalS != nil)
+	add("timeout_s", p.TimeoutS != nil)
+	add("fail_threshold", p.FailThreshold != nil)
+	add("http_config", len(p.HTTPConfig) > 0)
+	add("auto_resume", p.AutoResume != nil)
+
+	if len(fields) == 0 {
+		return nil, false
+	}
+	meta, err := json.Marshal(map[string][]string{"fields": fields})
+	if err != nil {
+		// map[string][]string always marshals; defend anyway.
+		return nil, true
+	}
+	return meta, true
 }
 
 // DeleteMonitor removes a monitor owned by callerUserID. Idempotent-ish: a
@@ -297,6 +358,7 @@ func toMonitor(row db.Monitor) Monitor {
 		State:        row.State,
 		FailStreak:   row.FailStreak,
 		AlertsMuted:  row.AlertsMuted,
+		AutoResume:   row.AutoResume,
 		CreatedAt:    row.CreatedAt.Time,
 		UpdatedAt:    row.UpdatedAt.Time,
 	}
@@ -332,6 +394,13 @@ func int4OrNull(v *int32) pgtype.Int4 {
 		return pgtype.Int4{}
 	}
 	return pgtype.Int4{Int32: *v, Valid: true}
+}
+
+func boolOrNull(v *bool) pgtype.Bool {
+	if v == nil {
+		return pgtype.Bool{}
+	}
+	return pgtype.Bool{Bool: *v, Valid: true}
 }
 
 func int32Ptr(v pgtype.Int4) *int32 {

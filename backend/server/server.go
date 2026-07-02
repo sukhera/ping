@@ -81,12 +81,20 @@ func New(addr string, deps Deps) *http.Server {
 
 		r.Post("/api/v1/schedule/describe", mh.describeSchedule)
 
+		r.Get("/api/v1/events", mh.listEvents)
+
 		r.Route("/api/v1/monitors", func(r chi.Router) {
 			r.Post("/", mh.create)
 			r.Get("/", mh.list)
 			r.Get("/{id}", mh.get)
 			r.Patch("/{id}", mh.update)
 			r.Delete("/{id}", mh.delete)
+
+			r.Post("/{id}/pause", mh.pause)
+			r.Post("/{id}/resume", mh.resume)
+			r.Post("/{id}/mute", mh.mute)
+			r.Post("/{id}/unmute", mh.unmute)
+			r.Get("/{id}/events", mh.listMonitorEvents)
 		})
 	})
 

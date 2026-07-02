@@ -87,6 +87,7 @@ type Monitor struct {
 	PausedAt      pgtype.Timestamptz `json:"paused_at"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+	AutoResume    bool               `json:"auto_resume"`
 }
 
 type ProbeResult struct {

@@ -2,13 +2,15 @@
 INSERT INTO monitors (
     user_id, kind, slug, name,
     schedule_kind, period_s, cron_expr, tz, grace_s,
-    url, method, interval_s, timeout_s, fail_threshold, http_config
+    url, method, interval_s, timeout_s, fail_threshold, http_config,
+    auto_resume
 ) VALUES (
     sqlc.arg(user_id), sqlc.arg(kind), sqlc.arg(slug), sqlc.arg(name),
     sqlc.narg(schedule_kind), sqlc.narg(period_s), sqlc.narg(cron_expr),
     COALESCE(NULLIF(sqlc.arg(tz)::text, ''), 'UTC'), sqlc.narg(grace_s),
     sqlc.narg(url), sqlc.narg(method), sqlc.narg(interval_s), sqlc.narg(timeout_s), sqlc.narg(fail_threshold),
-    COALESCE(sqlc.narg(http_config)::jsonb, '{}'::jsonb)
+    COALESCE(sqlc.narg(http_config)::jsonb, '{}'::jsonb),
+    COALESCE(sqlc.narg(auto_resume)::boolean, true)
 )
 RETURNING *;
 
@@ -67,6 +69,7 @@ SET
     timeout_s      = COALESCE(sqlc.narg(timeout_s), timeout_s),
     fail_threshold = COALESCE(sqlc.narg(fail_threshold), fail_threshold),
     http_config    = COALESCE(sqlc.narg(http_config)::jsonb, http_config),
+    auto_resume    = COALESCE(sqlc.narg(auto_resume)::boolean, auto_resume),
     updated_at     = now()
 WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id)
 RETURNING *;
@@ -75,12 +78,17 @@ RETURNING *;
 -- already hold locked via GetMonitorBySlugForUpdate. next_deadline is NULL on a
 -- fail; paused_at is always cleared (any check-in auto-resumes the monitor).
 -- name: UpdateMonitorOnCheckin :exec
+-- paused_at is cleared (auto-resume) only when the monitor's auto_resume flag is
+-- set (PING-010). With auto_resume=false a check-in still records state and
+-- re-arms next_deadline, but leaves paused_at set — the scheduler keeps skipping
+-- it (its claims filter paused_at IS NULL), so the future deadline is inert
+-- until the monitor is explicitly resumed.
 UPDATE monitors
 SET state           = sqlc.arg(state),
     last_checkin_at = sqlc.arg(last_checkin_at),
     next_deadline   = sqlc.narg(next_deadline),
     fail_streak     = sqlc.arg(fail_streak),
-    paused_at       = NULL,
+    paused_at       = CASE WHEN auto_resume THEN NULL ELSE paused_at END,
     updated_at      = now()
 WHERE id = sqlc.arg(id);
 
@@ -105,15 +113,40 @@ SET state         = 'down',
     updated_at    = now()
 WHERE id = $1;
 
--- name: PauseMonitor :exec
+-- Pause (PING-010): set the flag only — state is deliberately untouched (paused
+-- is a flag, not a state, per §2.3). RETURNING so the handler can echo the
+-- updated monitor. Zero rows affected (foreign/missing id) => ErrNotFound.
+-- name: PauseMonitor :one
 UPDATE monitors
-SET paused_at = now()
-WHERE id = $1 AND user_id = $2;
+SET paused_at = now(), updated_at = now()
+WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id)
+RETURNING *;
 
--- name: ResumeMonitor :exec
+-- Resume (PING-010): a clean restart — clear the flag, set state='up', and
+-- re-arm next_deadline from the resume moment (computed by the caller via
+-- nextDeadlineFor; NULL for non-heartbeat / unscheduled). Re-arming from now is
+-- what stops a monitor paused past its deadline from tripping late/down the
+-- instant it resumes (AC-2).
+-- name: ResumeMonitor :one
 UPDATE monitors
-SET paused_at = NULL
-WHERE id = $1 AND user_id = $2;
+SET paused_at     = NULL,
+    state         = 'up',
+    next_deadline = sqlc.narg(next_deadline),
+    updated_at    = now()
+WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id)
+RETURNING *;
+
+-- name: MuteMonitor :one
+UPDATE monitors
+SET alerts_muted = true, updated_at = now()
+WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id)
+RETURNING *;
+
+-- name: UnmuteMonitor :one
+UPDATE monitors
+SET alerts_muted = false, updated_at = now()
+WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id)
+RETURNING *;
 
 -- :execrows (not :exec) so the store layer can tell "deleted" apart from
 -- "no matching row" (foreign or already-deleted id) via RowsAffected.

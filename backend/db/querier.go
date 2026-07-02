@@ -56,6 +56,15 @@ type Querier interface {
 	// meta defaults to an empty object when the caller passes NULL.
 	InsertEvent(ctx context.Context, arg InsertEventParams) (Event, error)
 	ListAPIKeysByUser(ctx context.Context, userID pgtype.UUID) ([]ApiKey, error)
+	// Per-monitor event feed (PING-010): ownership is checked in the handler, so
+	// this filters by monitor_id only (plus optional type + cursor). Uses
+	// idx_events_monitor (monitor_id, created_at DESC).
+	ListEventsByMonitorPage(ctx context.Context, arg ListEventsByMonitorPageParams) ([]Event, error)
+	// Global event feed (PING-010): the caller's events across all their monitors,
+	// newest first, with optional monitor and type filters. Cursor is the BIGSERIAL
+	// id (monotonic), so id < cursor paginates strictly. Ordering by id DESC uses
+	// idx_events_id.
+	ListEventsByUserPage(ctx context.Context, arg ListEventsByUserPageParams) ([]Event, error)
 	ListMonitorsByUser(ctx context.Context, userID pgtype.UUID) ([]Monitor, error)
 	// Cursor pagination on (created_at, id) rather than OFFSET: created_at alone
 	// isn't unique, so the composite key keeps page boundaries stable under
@@ -70,8 +79,17 @@ type Querier interface {
 	// deliberately untouched — the scheduler must never resume a paused monitor
 	// (unlike UpdateMonitorOnCheckin, which auto-resumes on a real check-in).
 	MarkMonitorLate(ctx context.Context, arg MarkMonitorLateParams) error
-	PauseMonitor(ctx context.Context, arg PauseMonitorParams) error
-	ResumeMonitor(ctx context.Context, arg ResumeMonitorParams) error
+	MuteMonitor(ctx context.Context, arg MuteMonitorParams) (Monitor, error)
+	// Pause (PING-010): set the flag only — state is deliberately untouched (paused
+	// is a flag, not a state, per §2.3). RETURNING so the handler can echo the
+	// updated monitor. Zero rows affected (foreign/missing id) => ErrNotFound.
+	PauseMonitor(ctx context.Context, arg PauseMonitorParams) (Monitor, error)
+	// Resume (PING-010): a clean restart — clear the flag, set state='up', and
+	// re-arm next_deadline from the resume moment (computed by the caller via
+	// nextDeadlineFor; NULL for non-heartbeat / unscheduled). Re-arming from now is
+	// what stops a monitor paused past its deadline from tripping late/down the
+	// instant it resumes (AC-2).
+	ResumeMonitor(ctx context.Context, arg ResumeMonitorParams) (Monitor, error)
 	RevokeAPIKey(ctx context.Context, arg RevokeAPIKeyParams) error
 	RevokeRefreshTokenFamily(ctx context.Context, familyID pgtype.UUID) error
 	// Atomically marks a token rotated only if it hasn't already been rotated or
@@ -81,6 +99,7 @@ type Querier interface {
 	// clause before rotated_at becomes non-null.
 	RotateRefreshTokenIfUnrotated(ctx context.Context, id pgtype.UUID) (RefreshToken, error)
 	TouchAPIKeyLastUsed(ctx context.Context, id pgtype.UUID) error
+	UnmuteMonitor(ctx context.Context, arg UnmuteMonitorParams) (Monitor, error)
 	// Partial update: sqlc.narg fields left NULL keep their current value via
 	// COALESCE. Ownership-enforced by the id + user_id WHERE, matching
 	// Pause/Resume/Delete — a foreign monitor_id updates zero rows rather than
@@ -89,6 +108,11 @@ type Querier interface {
 	// Ingest fast path (PING-008): apply a check-in's effect to the monitor row we
 	// already hold locked via GetMonitorBySlugForUpdate. next_deadline is NULL on a
 	// fail; paused_at is always cleared (any check-in auto-resumes the monitor).
+	// paused_at is cleared (auto-resume) only when the monitor's auto_resume flag is
+	// set (PING-010). With auto_resume=false a check-in still records state and
+	// re-arms next_deadline, but leaves paused_at set — the scheduler keeps skipping
+	// it (its claims filter paused_at IS NULL), so the future deadline is inert
+	// until the monitor is explicitly resumed.
 	UpdateMonitorOnCheckin(ctx context.Context, arg UpdateMonitorOnCheckinParams) error
 }
 

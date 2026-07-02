@@ -40,6 +40,14 @@ type monitorStore interface {
 	ListMonitors(ctx context.Context, userID, cursor string, limit int32) (store.MonitorPage, error)
 	UpdateMonitor(ctx context.Context, id, callerUserID string, p store.UpdateMonitorParams) (store.Monitor, error)
 	DeleteMonitor(ctx context.Context, id, callerUserID string) error
+
+	PauseMonitor(ctx context.Context, id, callerUserID string) (store.Monitor, error)
+	ResumeMonitor(ctx context.Context, id, callerUserID string, now time.Time) (store.Monitor, error)
+	MuteMonitor(ctx context.Context, id, callerUserID string) (store.Monitor, error)
+	UnmuteMonitor(ctx context.Context, id, callerUserID string) (store.Monitor, error)
+
+	ListEventsByUser(ctx context.Context, userID, monitorID, eventType, cursor string, limit int32) (store.EventPage, error)
+	ListEventsByMonitor(ctx context.Context, monitorID, eventType, cursor string, limit int32) (store.EventPage, error)
 }
 
 type monitorHandler struct {
@@ -83,14 +91,16 @@ type httpFields struct {
 }
 
 type createMonitorRequest struct {
-	Kind string `json:"kind"`
-	Name string `json:"name"`
+	Kind       string `json:"kind"`
+	Name       string `json:"name"`
+	AutoResume *bool  `json:"auto_resume,omitempty"`
 	scheduleFields
 	httpFields
 }
 
 type updateMonitorRequest struct {
-	Name *string `json:"name,omitempty"`
+	Name       *string `json:"name,omitempty"`
+	AutoResume *bool   `json:"auto_resume,omitempty"`
 	scheduleFields
 	httpFields
 }
@@ -115,6 +125,7 @@ type monitorResponse struct {
 	FailThreshold *int32     `json:"fail_threshold,omitempty"`
 	FailStreak    int32      `json:"fail_streak"`
 	AlertsMuted   bool       `json:"alerts_muted"`
+	AutoResume    bool       `json:"auto_resume"`
 	LastCheckinAt *time.Time `json:"last_checkin_at,omitempty"`
 	NextDeadline  *time.Time `json:"next_deadline,omitempty"`
 	PausedAt      *time.Time `json:"paused_at,omitempty"`
@@ -142,6 +153,7 @@ func toMonitorResponse(m store.Monitor, baseURL string) monitorResponse {
 		FailThreshold: m.FailThreshold,
 		FailStreak:    m.FailStreak,
 		AlertsMuted:   m.AlertsMuted,
+		AutoResume:    m.AutoResume,
 		LastCheckinAt: m.LastCheckinAt,
 		NextDeadline:  m.NextDeadline,
 		PausedAt:      m.PausedAt,
@@ -315,6 +327,7 @@ func (h *monitorHandler) validateCreate(w http.ResponseWriter, req createMonitor
 			CronExpr:     req.CronExpr,
 			TZ:           req.TZ,
 			GraceS:       req.GraceS,
+			AutoResume:   req.AutoResume,
 		}, true
 
 	case "http":
@@ -334,6 +347,7 @@ func (h *monitorHandler) validateCreate(w http.ResponseWriter, req createMonitor
 			TimeoutS:      req.TimeoutS,
 			FailThreshold: req.FailThreshold,
 			HTTPConfig:    []byte(req.HTTPConfig),
+			AutoResume:    req.AutoResume,
 		}, true
 
 	default:
@@ -397,6 +411,10 @@ func (h *monitorHandler) validateUpdate(w http.ResponseWriter, existing store.Mo
 			}
 		}
 	}
+
+	// auto_resume applies to both kinds and is independent of the schedule/http
+	// field groups.
+	params.AutoResume = req.AutoResume
 
 	return params, true
 }
