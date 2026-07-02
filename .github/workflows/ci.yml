@@ -1,18 +1,103 @@
 name: CI
 
-# Dormant until GitHub Actions billing is re-enabled on this repo — the real gate today is
-# lefthook (see TECH-PLAN.md §6.4). This workflow runs exactly `make verify` plus the
-# integration and E2E suites required by the PR checklist, so enabling billing later
-# changes nothing about the workflow itself.
-
 on:
   push:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GOLANGCI_LINT_VERSION: v2.12.2
+  SQLC_VERSION: v1.31.1
+  MIGRATE_VERSION: v4.19.1
+
 jobs:
-  verify:
+  changes:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+      e2e: ${{ steps.filter.outputs.e2e }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            backend:
+              - 'backend/**'
+              - 'Makefile'
+            frontend:
+              - 'frontend/**'
+            e2e:
+              - 'frontend/**'
+              - 'backend/server/**'
+              - 'backend/store/**'
+              - 'backend/worker/**'
+
+  backend:
+    needs: changes
+    if: needs.changes.outputs.backend == 'true' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache-dependency-path: backend/go.sum
+
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+          working-directory: backend
+
+      - name: Install sqlc
+        run: |
+          curl -sSfL "https://github.com/sqlc-dev/sqlc/releases/download/${SQLC_VERSION}/sqlc_${SQLC_VERSION#v}_linux_amd64.tar.gz" \
+            | tar -xz -C /usr/local/bin sqlc
+
+      - name: Install migrate
+        run: |
+          curl -sSfL "https://github.com/golang-migrate/migrate/releases/download/${MIGRATE_VERSION}/migrate.linux-amd64.tar.gz" \
+            | tar -xz -C /usr/local/bin migrate
+
+      - name: make verify-backend
+        run: make verify-backend
+
+      - name: make verify-generated
+        run: make verify-generated
+
+  frontend:
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend deps
+        run: cd frontend && npm ci
+
+      - name: make verify-frontend
+        run: make verify-frontend
+
+  integration:
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     services:
       postgres:
         image: postgres:16-alpine
@@ -44,26 +129,10 @@ jobs:
           go-version: "1.26"
           cache-dependency-path: backend/go.sum
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Install golangci-lint
-        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
-
-      - name: Install sqlc
-        run: go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
-
-      - name: Install golang-migrate
-        run: go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
-
-      - name: Install frontend deps
-        run: cd frontend && npm ci
-
-      - name: make verify
-        run: make verify
+      - name: Install migrate
+        run: |
+          curl -sSfL "https://github.com/golang-migrate/migrate/releases/download/${MIGRATE_VERSION}/migrate.linux-amd64.tar.gz" \
+            | tar -xz -C /usr/local/bin migrate
 
       - name: make migrate-up
         env:
@@ -76,5 +145,110 @@ jobs:
           REDIS_URL: redis://localhost:6379/0
         run: make test-integration
 
-      - name: Playwright E2E
-        run: cd frontend && npx playwright install --with-deps && npm run e2e
+  e2e:
+    needs: changes
+    if: needs.changes.outputs.e2e == 'true' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ping
+          POSTGRES_PASSWORD: ping
+          POSTGRES_DB: ping
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://ping:ping@localhost:5432/ping?sslmode=disable
+      REDIS_URL: redis://localhost:6379/0
+      PING_PORT: 8080
+      PING_ENV: test
+      PING_BASE_URL: http://localhost:8080
+      CORS_ALLOWED_ORIGIN: http://localhost:3000
+      JWT_PRIVATE_KEY_PATH: ./keys/jwt_private.pem
+      JWT_PUBLIC_KEY_PATH: ./keys/jwt_public.pem
+      JWT_ACCESS_TTL: 15m
+      JWT_REFRESH_TTL: 720h
+      REGISTRATION_OPEN: "true"
+      PING_TEST_CLOCK: "1"
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:8080
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache-dependency-path: backend/go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install migrate
+        run: |
+          curl -sSfL "https://github.com/golang-migrate/migrate/releases/download/${MIGRATE_VERSION}/migrate.linux-amd64.tar.gz" \
+            | tar -xz -C /usr/local/bin migrate
+
+      - name: make migrate-up
+        run: make migrate-up
+
+      - name: Generate JWT dev keypair
+        run: |
+          mkdir -p backend/keys
+          openssl genrsa -out backend/keys/jwt_private.pem 2048
+          openssl rsa -in backend/keys/jwt_private.pem -pubout -out backend/keys/jwt_public.pem
+
+      - name: Start backend API
+        run: |
+          cd backend && go run ./cmd/ping --role=api &
+          for attempt in $(seq 1 30); do
+            echo "waiting for backend (attempt $attempt/30)"
+            curl -sf http://localhost:8080/health && exit 0
+            sleep 1
+          done
+          echo "backend did not become healthy in time" >&2
+          exit 1
+
+      - name: Install frontend deps
+        run: cd frontend && npm ci
+
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('frontend/package-lock.json') }}
+
+      - name: Install Playwright browsers
+        run: cd frontend && npx playwright install --with-deps
+
+      - name: Start frontend dev server
+        run: |
+          cd frontend && npm run dev &
+          for attempt in $(seq 1 30); do
+            echo "waiting for frontend (attempt $attempt/30)"
+            curl -sf http://localhost:3000 && exit 0
+            sleep 1
+          done
+          echo "frontend did not become ready in time" >&2
+          exit 1
+
+      - name: Run E2E suite
+        run: cd frontend && npm run e2e

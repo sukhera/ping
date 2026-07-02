@@ -284,7 +284,7 @@ test-integration:                                                ## needs docker
 	cd backend && go test -race -tags integration ./...
 ```
 
-Target: pre-commit < 10s (staged-only, `--fast` lint), pre-push < 3 min. Integration + E2E are not in the hook (too slow) but are **required by the PR checklist** for tickets touching DB/workers/UI flows. `ci.yml` is written in PING-001 to run exactly `make verify` + integration + E2E, so enabling billing later changes nothing about the workflow — the gate just gets a second enforcement point.
+Target: pre-commit < 10s (staged-only, `--fast` lint), pre-push < 3 min. Integration + E2E are not in the hook (too slow) but are **required by the PR checklist** for tickets touching DB/workers/UI flows. With Actions billing restored, CI is the second enforcement point — its design lives in §6.6, and hooks remain the first line so feedback stays local and instant.
 
 ### 6.5 Labels & milestones (GitHub)
 
@@ -301,6 +301,32 @@ gh issue create --title "PING-009: Scheduler worker — deadline evaluation" \
 ```
 
 (Each ticket section below is self-contained precisely so it can be pasted/extracted into an issue body and handed to an agent.)
+
+### 6.6 GitHub Actions design (billing restored)
+
+The v1 monolithic `ci.yml` (one serial job: compile three tools from source, install browsers, run everything) is the anti-pattern that makes CI slow AND flaky — `@latest` tool installs drift from local versions, and a 20-minute wall time turns every red build into a half-hour agent debug loop. The redesign (implemented by PING-025):
+
+**Budgets, treated as SLOs:** PR feedback (lint + unit) < 5 min p50; full pipeline < 10 min. A breach is an `infra` bug ticket, not a fact of life.
+
+**Split into parallel jobs gated by change detection** (`dorny/paths-filter` as a first `changes` job):
+
+| Job | Runs when | Contents | Timeout |
+|---|---|---|---|
+| `backend` | `backend/**` or `Makefile` changed, and always on `main` | `make verify-backend` + `verify-generated` | 10 min |
+| `frontend` | `frontend/**` changed, and always on `main` | `make verify-frontend` | 10 min |
+| `integration` | `backend/**` changed | Postgres+Redis services, `make migrate-up` + `test-integration` | 10 min |
+| `e2e` | `frontend/**` or `backend/server\|store\|worker/**` changed, and always on `main` | Playwright suite | 15 min |
+
+`make verify` stays the local command; CI calls the per-area targets directly so a docs-only PR runs almost nothing and a backend PR never waits on Playwright.
+
+**Tooling rules — the flakiness killers:**
+- Never `go install <tool>@latest` in CI: it compiles from source (minutes) and un-pins the version so CI and local hooks disagree. golangci-lint via its official action (pinned version, built-in cache); sqlc + migrate as pinned prebuilt release binaries, versions declared in one place (`Makefile` vars) so local and CI can't drift.
+- Cache all the things: setup-go/setup-node built-in caches (already in place), golangci-lint action cache, Playwright browsers cached keyed on the `@playwright/test` version — `--with-deps` reinstall on every run is multiple minutes of pure waste.
+- Pin action majors (`actions/checkout@v4`), `timeout-minutes` on every job (a hung job otherwise burns the 6-hour default), and workflow-level `concurrency: { group: ci-${{ github.ref }}, cancel-in-progress: true }` so a force-push cancels the stale run instead of queueing behind it.
+
+**Branch protection:** require the four job checks on `main` (skipped-by-filter counts as success). Hooks remain the first gate — CI catches what slipped, it is not the debugging environment.
+
+**CI-failure discipline (for agents and humans):** reproduce locally first — `make verify` mirrors CI by construction, and integration failures reproduce with `make docker-up && make test-integration`. Fetch logs once with `gh run view --log-failed`, fix locally, push once. Push-to-debug cycles are the single biggest time-and-token sink an agent can fall into; a session that pushes more than twice for the same red check should stop and reproduce locally instead.
 
 ## 7. Documentation set
 
@@ -582,6 +608,20 @@ README per §7 outline; ARCHITECTURE.md with §2 diagrams + scheduler-can't-miss
 - [ ] Screenshots match DESIGN.md (the dashboard shot is portfolio-lead quality)
 - [ ] All docs cross-link correctly; no TODO/FIXME markers left in docs
 - [ ] `git tag v1.0.0` on a commit where `make verify` + integration + E2E + a soak audit all pass
+
+### Infra backlog
+
+### PING-025: CI redesign — parallel, cached, path-filtered workflows
+`infra` `chore` `size:M` · Deps: PING-001
+
+Replace the monolithic `ci.yml` with the §6.6 design: `changes` job (dorny/paths-filter) fanning out to `backend`, `frontend`, `integration`, and `e2e` jobs; pinned prebuilt tools (no `go install @latest` — golangci-lint official action, sqlc/migrate release binaries with versions single-sourced in Makefile vars); Playwright browser cache; per-job `timeout-minutes`; workflow `concurrency` with cancel-in-progress; remove the stale "dormant until billing" header comment. Update branch protection to require the four checks.
+
+**AC**
+- [ ] Docs-only PR completes CI in < 90s; backend-only PR skips `frontend` and `e2e` jobs (verify with test PRs)
+- [ ] Warm-cache PR with backend+frontend changes: lint+unit feedback < 5 min, full pipeline < 10 min (link run timings in the PR)
+- [ ] No `@latest` installs anywhere in workflows; tool versions declared once and shared by local `make tools` and CI
+- [ ] Second push to a PR cancels the in-progress run for the previous head (verified)
+- [ ] `make verify` locally still covers a superset of what any single CI job runs — CLAUDE.md gate wording still true
 
 ---
 
