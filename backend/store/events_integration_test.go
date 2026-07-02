@@ -287,6 +287,21 @@ func TestEventFeed_ShowsAllTypesAndFilters(t *testing.T) {
 	}
 }
 
+// A no-op PATCH (no fields set) must not clutter the timeline with an empty
+// config_change event.
+func TestUpdateMonitor_NoOpEmitsNoEvent(t *testing.T) {
+	e := newCheckinTestEnv(t)
+	ctx := context.Background()
+	m, userID := e.seedOwnedMonitor(t, true)
+
+	if _, err := e.store.UpdateMonitor(ctx, m.ID.String(), userID, UpdateMonitorParams{}); err != nil {
+		t.Fatalf("UpdateMonitor: %v", err)
+	}
+	if n := e.countRows(t, `SELECT count(*) FROM events WHERE monitor_id=$1 AND type='config_change'`, m.ID); n != 0 {
+		t.Errorf("config_change events = %d, want 0 for a no-op update", n)
+	}
+}
+
 func TestEventFeed_CursorPaginates(t *testing.T) {
 	e := newCheckinTestEnv(t)
 	ctx := context.Background()

@@ -268,9 +268,12 @@ func (s *Store) UpdateMonitor(ctx context.Context, id, callerUserID string, p Up
 			return fmt.Errorf("store: update monitor: %w", err)
 		}
 
-		meta := changedFieldsMeta(p)
-		if _, err := recordEventMeta(ctx, q, row.ID, "config_change", "Configuration updated", meta); err != nil {
-			return err
+		// Only record a config_change when the PATCH actually changed a field —
+		// a no-op update shouldn't clutter the timeline.
+		if meta, changed := changedFieldsMeta(p); changed {
+			if _, err := recordEventMeta(ctx, q, row.ID, "config_change", "Configuration updated", meta); err != nil {
+				return err
+			}
 		}
 		updated = toMonitor(row)
 		return nil
@@ -282,8 +285,9 @@ func (s *Store) UpdateMonitor(ctx context.Context, id, callerUserID string, p Up
 }
 
 // changedFieldsMeta builds the {"fields": [...]} meta payload for a
-// config_change event, listing which settable fields the PATCH carried.
-func changedFieldsMeta(p UpdateMonitorParams) []byte {
+// config_change event, listing which settable fields the PATCH carried. The
+// bool is false when no field changed, so the caller can skip the event.
+func changedFieldsMeta(p UpdateMonitorParams) ([]byte, bool) {
 	var fields []string
 	add := func(name string, changed bool) {
 		if changed {
@@ -304,12 +308,15 @@ func changedFieldsMeta(p UpdateMonitorParams) []byte {
 	add("http_config", len(p.HTTPConfig) > 0)
 	add("auto_resume", p.AutoResume != nil)
 
+	if len(fields) == 0 {
+		return nil, false
+	}
 	meta, err := json.Marshal(map[string][]string{"fields": fields})
 	if err != nil {
 		// map[string][]string always marshals; defend anyway.
-		return nil
+		return nil, true
 	}
-	return meta
+	return meta, true
 }
 
 // DeleteMonitor removes a monitor owned by callerUserID. Idempotent-ish: a
