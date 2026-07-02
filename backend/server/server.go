@@ -62,6 +62,19 @@ func New(addr string, deps Deps) *http.Server {
 		r.Post("/logout", ah.logout)
 	})
 
+	// Ping ingestion (PING-008): public, unauthenticated, GET/POST/HEAD. The
+	// static /start and /fail routes are registered before the /{code}
+	// catch-all so chi matches them first.
+	ch := newCheckinHandler(st, deps)
+	r.Route("/p/{slug}", func(r chi.Router) {
+		for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodHead} {
+			r.MethodFunc(method, "/", ch.success)
+			r.MethodFunc(method, "/start", ch.start)
+			r.MethodFunc(method, "/fail", ch.fail)
+			r.MethodFunc(method, "/{code}", ch.exitCode)
+		}
+	})
+
 	mh := newMonitorHandler(st, deps)
 	r.Group(func(r chi.Router) {
 		r.Use(requireAuth(deps.JWTPublicKey))

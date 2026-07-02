@@ -305,6 +305,49 @@ func (q *Queries) GetMonitorBySlug(ctx context.Context, slug string) (Monitor, e
 	return i, err
 }
 
+const getMonitorBySlugForUpdate = `-- name: GetMonitorBySlugForUpdate :one
+SELECT id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at FROM monitors
+WHERE slug = $1
+FOR UPDATE
+`
+
+// Ingest fast path (PING-008): fetch the monitor and lock its row for the rest
+// of the transaction. Plain FOR UPDATE (block, don't skip) — every ping must be
+// processed, and the lock serializes concurrent pings on the same slug so the
+// read-state / transition / write is atomic (no duplicate recovery/down rows).
+func (q *Queries) GetMonitorBySlugForUpdate(ctx context.Context, slug string) (Monitor, error) {
+	row := q.db.QueryRow(ctx, getMonitorBySlugForUpdate, slug)
+	var i Monitor
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Kind,
+		&i.Slug,
+		&i.Name,
+		&i.ScheduleKind,
+		&i.PeriodS,
+		&i.CronExpr,
+		&i.Tz,
+		&i.GraceS,
+		&i.Url,
+		&i.Method,
+		&i.IntervalS,
+		&i.TimeoutS,
+		&i.FailThreshold,
+		&i.HttpConfig,
+		&i.State,
+		&i.FailStreak,
+		&i.LastCheckinAt,
+		&i.NextDeadline,
+		&i.NextProbeAt,
+		&i.AlertsMuted,
+		&i.PausedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const listMonitorsByUser = `-- name: ListMonitorsByUser :many
 SELECT id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at FROM monitors
 WHERE user_id = $1
@@ -549,4 +592,37 @@ func (q *Queries) UpdateMonitor(ctx context.Context, arg UpdateMonitorParams) (M
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const updateMonitorOnCheckin = `-- name: UpdateMonitorOnCheckin :exec
+UPDATE monitors
+SET state           = $1,
+    last_checkin_at = $2,
+    next_deadline   = $3,
+    fail_streak     = $4,
+    paused_at       = NULL,
+    updated_at      = now()
+WHERE id = $5
+`
+
+type UpdateMonitorOnCheckinParams struct {
+	State         string             `json:"state"`
+	LastCheckinAt pgtype.Timestamptz `json:"last_checkin_at"`
+	NextDeadline  pgtype.Timestamptz `json:"next_deadline"`
+	FailStreak    int32              `json:"fail_streak"`
+	ID            pgtype.UUID        `json:"id"`
+}
+
+// Ingest fast path (PING-008): apply a check-in's effect to the monitor row we
+// already hold locked via GetMonitorBySlugForUpdate. next_deadline is NULL on a
+// fail; paused_at is always cleared (any check-in auto-resumes the monitor).
+func (q *Queries) UpdateMonitorOnCheckin(ctx context.Context, arg UpdateMonitorOnCheckinParams) error {
+	_, err := q.db.Exec(ctx, updateMonitorOnCheckin,
+		arg.State,
+		arg.LastCheckinAt,
+		arg.NextDeadline,
+		arg.FailStreak,
+		arg.ID,
+	)
+	return err
 }

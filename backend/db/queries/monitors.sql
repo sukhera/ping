@@ -20,6 +20,15 @@ WHERE id = $1;
 SELECT * FROM monitors
 WHERE slug = $1;
 
+-- Ingest fast path (PING-008): fetch the monitor and lock its row for the rest
+-- of the transaction. Plain FOR UPDATE (block, don't skip) — every ping must be
+-- processed, and the lock serializes concurrent pings on the same slug so the
+-- read-state / transition / write is atomic (no duplicate recovery/down rows).
+-- name: GetMonitorBySlugForUpdate :one
+SELECT * FROM monitors
+WHERE slug = $1
+FOR UPDATE;
+
 -- name: ListMonitorsByUser :many
 SELECT * FROM monitors
 WHERE user_id = $1
@@ -61,6 +70,19 @@ SET
     updated_at     = now()
 WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id)
 RETURNING *;
+
+-- Ingest fast path (PING-008): apply a check-in's effect to the monitor row we
+-- already hold locked via GetMonitorBySlugForUpdate. next_deadline is NULL on a
+-- fail; paused_at is always cleared (any check-in auto-resumes the monitor).
+-- name: UpdateMonitorOnCheckin :exec
+UPDATE monitors
+SET state           = sqlc.arg(state),
+    last_checkin_at = sqlc.arg(last_checkin_at),
+    next_deadline   = sqlc.narg(next_deadline),
+    fail_streak     = sqlc.arg(fail_streak),
+    paused_at       = NULL,
+    updated_at      = now()
+WHERE id = sqlc.arg(id);
 
 -- name: PauseMonitor :exec
 UPDATE monitors
