@@ -53,18 +53,19 @@ shadcn components were generated with `components.json`'s `"style": "radix-nova"
 | `make migrate-up` / `migrate-down` | Applies/rolls back `backend/db/migrations` (golang-migrate) |
 | `make sqlc` | Regenerates `backend/db/*.go` from `backend/db/queries/*.sql` |
 | `make hooks` | Installs lefthook git hooks |
+| `make tools` | Installs pinned golangci-lint/sqlc/migrate (versions shared with CI) |
 | `make verify` | Full local gate: backend + frontend + generated-code drift — must pass before every push |
 | `make test-integration` | Integration tests behind `-tags integration`; needs `make docker-up` |
 
 ## Quality gate
 
-CI is offline, so lefthook is the real, machine-enforced gate:
+lefthook is the first, local gate — fast feedback before anything reaches GitHub:
 
 - **commit-msg** — rejects non-Conventional-Commit messages
 - **pre-commit** — gitleaks (staged secrets), `gofmt`, fast Go lint, frontend lint, staged files only
 - **pre-push** — `make verify`
 
-`--no-verify` is never used; see `CONTRIBUTING.md`.
+CI (`.github/workflows/ci.yml`) is the second enforcement point: path-filtered `backend`/`frontend`/`integration`/`e2e` jobs run per PR (see TECH-PLAN.md §6.6). `--no-verify` is never used; see `CONTRIBUTING.md`.
 
 ## Migrations & sqlc
 

@@ -93,8 +93,8 @@ for b in blocks:
     created += 1
 
 print(f"\ndone: {created} created, {skipped} skipped")
-if created + skipped != 24:
-    sys.exit(f"warning: expected 24 tickets, found {created + skipped} — check TECH-PLAN.md §8")
+if created + skipped < 24:
+    sys.exit(f"warning: expected at least 24 tickets, found {created + skipped} — check TECH-PLAN.md §8")
 PYEOF
 
 echo "all set — view with: gh issue list --milestone M0"
