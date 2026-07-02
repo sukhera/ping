@@ -53,11 +53,22 @@ jobs:
       - name: Install golangci-lint
         run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
 
+      - name: Install sqlc
+        run: go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
+
+      - name: Install golang-migrate
+        run: go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
+
       - name: Install frontend deps
         run: cd frontend && npm ci
 
       - name: make verify
         run: make verify
+
+      - name: make migrate-up
+        env:
+          DATABASE_URL: postgres://ping:ping@localhost:5432/ping?sslmode=disable
+        run: make migrate-up
 
       - name: make test-integration
         env:

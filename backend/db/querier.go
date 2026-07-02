@@ -23,11 +23,14 @@ type Querier interface {
 	CountUsers(ctx context.Context) (int64, error)
 	CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (ApiKey, error)
 	CreateMonitor(ctx context.Context, arg CreateMonitorParams) (Monitor, error)
+	CreateRefreshToken(ctx context.Context, arg CreateRefreshTokenParams) (RefreshToken, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
+	DeleteExpiredRefreshTokens(ctx context.Context) error
 	DeleteMonitor(ctx context.Context, arg DeleteMonitorParams) error
 	GetAPIKeyByHash(ctx context.Context, keyHash string) (ApiKey, error)
 	GetMonitorByID(ctx context.Context, id pgtype.UUID) (Monitor, error)
 	GetMonitorBySlug(ctx context.Context, slug string) (Monitor, error)
+	GetRefreshTokenByHash(ctx context.Context, tokenHash string) (RefreshToken, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id pgtype.UUID) (User, error)
 	ListAPIKeysByUser(ctx context.Context, userID pgtype.UUID) ([]ApiKey, error)
@@ -35,6 +38,13 @@ type Querier interface {
 	PauseMonitor(ctx context.Context, arg PauseMonitorParams) error
 	ResumeMonitor(ctx context.Context, arg ResumeMonitorParams) error
 	RevokeAPIKey(ctx context.Context, arg RevokeAPIKeyParams) error
+	RevokeRefreshTokenFamily(ctx context.Context, familyID pgtype.UUID) error
+	// Atomically marks a token rotated only if it hasn't already been rotated or
+	// revoked, closing the check-then-write race between GetRefreshTokenByHash
+	// and the rotation write: two concurrent requests replaying the same token
+	// can no longer both succeed, since only one UPDATE can match the WHERE
+	// clause before rotated_at becomes non-null.
+	RotateRefreshTokenIfUnrotated(ctx context.Context, id pgtype.UUID) (RefreshToken, error)
 	TouchAPIKeyLastUsed(ctx context.Context, id pgtype.UUID) error
 }
 
