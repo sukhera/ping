@@ -13,7 +13,10 @@ import (
 type Querier interface {
 	// Worker scan #1: scheduler claims heartbeat monitors past their deadline.
 	// Uses idx_monitors_due (next_deadline, partial WHERE state IN ('up','late') AND paused_at IS NULL).
-	ClaimDueMonitors(ctx context.Context, limit int32) ([]Monitor, error)
+	// The evaluation clock is passed in (sqlc.arg(now)) rather than SQL now() so the
+	// claim and the in-Go transition math share one consistent instant, and tests
+	// can drive it deterministically. Production passes time.Now().
+	ClaimDueMonitors(ctx context.Context, arg ClaimDueMonitorsParams) ([]Monitor, error)
 	// Worker scan #2: prober claims http monitors due for their next probe.
 	// Uses idx_monitors_probe_due (next_probe_at, partial WHERE kind = 'http' AND paused_at IS NULL).
 	ClaimDueProbes(ctx context.Context, limit int32) ([]Monitor, error)
@@ -59,6 +62,14 @@ type Querier interface {
 	// concurrent inserts. sqlc.narg(cursor_created_at)/sqlc.narg(cursor_id) are
 	// both NULL on the first page (no WHERE filter applied).
 	ListMonitorsByUserPage(ctx context.Context, arg ListMonitorsByUserPageParams) ([]Monitor, error)
+	// Scheduler late->down (PING-009): clear the deadline and bump the fail streak.
+	// paused_at untouched (see MarkMonitorLate).
+	MarkMonitorDown(ctx context.Context, id pgtype.UUID) error
+	// Scheduler up->late (PING-009): re-arm next_deadline to the DOWN threshold
+	// (occurrence + grace, computed by the caller) and flip state. paused_at is
+	// deliberately untouched — the scheduler must never resume a paused monitor
+	// (unlike UpdateMonitorOnCheckin, which auto-resumes on a real check-in).
+	MarkMonitorLate(ctx context.Context, arg MarkMonitorLateParams) error
 	PauseMonitor(ctx context.Context, arg PauseMonitorParams) error
 	ResumeMonitor(ctx context.Context, arg ResumeMonitorParams) error
 	RevokeAPIKey(ctx context.Context, arg RevokeAPIKeyParams) error

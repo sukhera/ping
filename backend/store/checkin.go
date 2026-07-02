@@ -157,17 +157,28 @@ func applyFail(ctx context.Context, q *db.Queries, m db.Monitor, now time.Time, 
 	return nil
 }
 
-// recordTransition writes the timeline event and its pending outbox alert row
-// for an up/down transition. The ingest path never dispatches — the alerter
-// worker (PING-012) claims the pending row.
-func recordTransition(ctx context.Context, q *db.Queries, monitorID pgtype.UUID, eventType, message string) error {
+// recordEvent writes a timeline event with NO outbox alert. Used for
+// transitions that should not page anyone — e.g. the intermediate up→late step,
+// which is informational only (an alert fires on →down, not on lateness).
+func recordEvent(ctx context.Context, q *db.Queries, monitorID pgtype.UUID, eventType, message string) (db.Event, error) {
 	event, err := q.InsertEvent(ctx, db.InsertEventParams{
 		MonitorID: monitorID,
 		Type:      eventType,
 		Message:   message,
 	})
 	if err != nil {
-		return fmt.Errorf("store: insert event: %w", err)
+		return db.Event{}, fmt.Errorf("store: insert event: %w", err)
+	}
+	return event, nil
+}
+
+// recordTransition writes the timeline event AND its pending outbox alert row
+// for an alerting transition (up/down). The ingest and scheduler paths never
+// dispatch — the alerter worker (PING-012) claims the pending row.
+func recordTransition(ctx context.Context, q *db.Queries, monitorID pgtype.UUID, eventType, message string) error {
+	event, err := recordEvent(ctx, q, monitorID, eventType, message)
+	if err != nil {
+		return err
 	}
 
 	if _, err := q.InsertAlert(ctx, db.InsertAlertParams{
@@ -180,22 +191,27 @@ func recordTransition(ctx context.Context, q *db.Queries, monitorID pgtype.UUID,
 	return nil
 }
 
-// nextDeadlineFor computes the re-armed deadline for a heartbeat monitor's
-// successful check-in at now. Non-heartbeat monitors (http) and heartbeats
-// without a schedule get a NULL deadline — they are not deadline-driven here.
+// nextDeadlineFor computes the re-armed next_deadline for a heartbeat monitor's
+// successful check-in at now. This is the bare scheduled OCCURRENCE (the "late"
+// threshold), not occurrence + grace: next_deadline always holds the next
+// instant the scheduler must act on, and the first such instant after a
+// check-in is when the next ping is due (→ late). The scheduler re-arms to
+// occurrence + grace when it moves the monitor to late (see store/scheduler.go).
+// Non-heartbeat monitors (http) and heartbeats without a schedule get a NULL
+// deadline — they are not deadline-driven here.
 func nextDeadlineFor(m db.Monitor, now time.Time) (pgtype.Timestamptz, error) {
 	if m.Kind != "heartbeat" || !m.ScheduleKind.Valid {
 		return pgtype.Timestamptz{}, nil
 	}
 
 	cfg := scheduleConfig(m)
-	deadline, err := schedule.NextDeadline(cfg, now, now)
+	occurrence, err := schedule.NextOccurrence(cfg, now, now)
 	if err != nil {
 		// A stored schedule that no longer validates is a data bug, not a
 		// client error; surface it rather than silently skipping the deadline.
 		return pgtype.Timestamptz{}, fmt.Errorf("store: recompute deadline: %w", err)
 	}
-	return pgtype.Timestamptz{Time: deadline, Valid: true}, nil
+	return pgtype.Timestamptz{Time: occurrence, Valid: true}, nil
 }
 
 // scheduleConfig builds a schedule.Config from a stored monitor row, converting

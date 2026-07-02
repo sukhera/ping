@@ -84,6 +84,27 @@ SET state           = sqlc.arg(state),
     updated_at      = now()
 WHERE id = sqlc.arg(id);
 
+-- Scheduler up->late (PING-009): re-arm next_deadline to the DOWN threshold
+-- (occurrence + grace, computed by the caller) and flip state. paused_at is
+-- deliberately untouched — the scheduler must never resume a paused monitor
+-- (unlike UpdateMonitorOnCheckin, which auto-resumes on a real check-in).
+-- name: MarkMonitorLate :exec
+UPDATE monitors
+SET state         = 'late',
+    next_deadline = sqlc.arg(next_deadline),
+    updated_at    = now()
+WHERE id = sqlc.arg(id);
+
+-- Scheduler late->down (PING-009): clear the deadline and bump the fail streak.
+-- paused_at untouched (see MarkMonitorLate).
+-- name: MarkMonitorDown :exec
+UPDATE monitors
+SET state         = 'down',
+    next_deadline = NULL,
+    fail_streak   = fail_streak + 1,
+    updated_at    = now()
+WHERE id = $1;
+
 -- name: PauseMonitor :exec
 UPDATE monitors
 SET paused_at = now()
@@ -102,13 +123,16 @@ WHERE id = $1 AND user_id = $2;
 
 -- Worker scan #1: scheduler claims heartbeat monitors past their deadline.
 -- Uses idx_monitors_due (next_deadline, partial WHERE state IN ('up','late') AND paused_at IS NULL).
+-- The evaluation clock is passed in (sqlc.arg(now)) rather than SQL now() so the
+-- claim and the in-Go transition math share one consistent instant, and tests
+-- can drive it deterministically. Production passes time.Now().
 -- name: ClaimDueMonitors :many
 SELECT * FROM monitors
-WHERE next_deadline < now()
+WHERE next_deadline < sqlc.arg(now)
   AND state IN ('up', 'late')
   AND paused_at IS NULL
 ORDER BY next_deadline
-LIMIT $1
+LIMIT sqlc.arg(page_limit)
 FOR UPDATE SKIP LOCKED;
 
 -- Worker scan #2: prober claims http monitors due for their next probe.

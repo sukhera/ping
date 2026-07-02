@@ -20,6 +20,9 @@ import (
 
 	"github.com/sukhera/ping/internal/config"
 	"github.com/sukhera/ping/server"
+	"github.com/sukhera/ping/store"
+	"github.com/sukhera/ping/worker"
+	"github.com/sukhera/ping/worker/scheduler"
 )
 
 func main() {
@@ -96,8 +99,14 @@ func run(role string) error {
 		})
 	}
 
-	// role == "worker" is a no-op until PING-009+ introduces the scheduler,
-	// prober, and alerter loops.
+	if role == "worker" || role == "all" {
+		st := store.New(dbPool, redisClient)
+		hb := worker.NewHeartbeat(redisClient)
+		g.Go(func() error {
+			return scheduler.Run(ctx, st, hb, scheduler.DefaultInterval)
+		})
+		// The prober and alerter loops attach here in later tickets (M3, PING-012).
+	}
 
 	return g.Wait()
 }

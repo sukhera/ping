@@ -58,18 +58,18 @@ type Config struct {
 	Grace    time.Duration
 }
 
-// NextDeadline returns the instant by which the next check-in must arrive,
-// given the last known check-in time (zero value if none yet) and the
-// current time. The deadline is the next scheduled occurrence after
-// lastCheckin (or now, if there is no prior check-in) plus the grace period.
+// NextOccurrence returns the next scheduled check-in instant after lastCheckin
+// (or now, if there is no prior check-in), WITHOUT the grace period — i.e. the
+// moment a check-in is expected. This is the "late" threshold: a monitor is
+// late once its occurrence passes, and down once occurrence + grace passes.
 //
-// For period schedules the next occurrence is simply lastCheckin + Period
-// (or now + Period when there is no prior check-in). For cron schedules the
-// next occurrence is computed in the monitor's timezone via robfig/cron,
-// which is DST-correct: a spring-forward gap is skipped forward past, and a
-// fall-back repeat resolves to the first occurrence, exactly as the time
-// package's Location-aware arithmetic behaves.
-func NextDeadline(cfg Config, lastCheckin, now time.Time) (time.Time, error) {
+// For period schedules the occurrence is simply lastCheckin + Period (or
+// now + Period when there is no prior check-in). For cron schedules it is the
+// next occurrence in the monitor's timezone via robfig/cron, which is
+// DST-correct: a spring-forward gap is skipped forward past, and a fall-back
+// repeat resolves to the first occurrence, exactly as the time package's
+// Location-aware arithmetic behaves.
+func NextOccurrence(cfg Config, lastCheckin, now time.Time) (time.Time, error) {
 	if err := cfg.Validate(); err != nil {
 		return time.Time{}, err
 	}
@@ -83,10 +83,21 @@ func NextDeadline(cfg Config, lastCheckin, now time.Time) (time.Time, error) {
 	// schedules, that CronExpr parses — so both are re-derived here
 	// without further error handling.
 	if cfg.Kind == KindPeriod {
-		return from.Add(cfg.Period).Add(cfg.Grace), nil
+		return from.Add(cfg.Period), nil
 	}
 
 	loc, _ := time.LoadLocation(cfg.TZ)
 	sched, _ := cronParser.Parse(cfg.CronExpr)
-	return sched.Next(from.In(loc)).Add(cfg.Grace), nil
+	return sched.Next(from.In(loc)), nil
+}
+
+// NextDeadline returns the instant by which the next check-in must arrive to
+// avoid a down alert: the next scheduled occurrence (see NextOccurrence) plus
+// the grace period.
+func NextDeadline(cfg Config, lastCheckin, now time.Time) (time.Time, error) {
+	occ, err := NextOccurrence(cfg, lastCheckin, now)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return occ.Add(cfg.Grace), nil
 }
