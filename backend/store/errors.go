@@ -12,6 +12,11 @@ var (
 	ErrInvalidCredentials  = errors.New("invalid email or password")
 	ErrInvalidRefreshToken = errors.New("invalid or expired refresh token")
 	ErrRefreshReuse        = errors.New("refresh token reuse detected")
+	ErrNotFound            = errors.New("resource not found")
+	// ErrForbidden signals a resource exists but is owned by a different
+	// user. Callers must return 403, never mask this as ErrNotFound (404) —
+	// see the security checklist's IDOR guidance (TECH-PLAN PING-007 AC).
+	ErrForbidden = errors.New("forbidden")
 )
 
 // httpError wraps a sentinel error with the HTTP status the server layer
@@ -32,9 +37,6 @@ func newHTTPError(err error, status int) httpError {
 
 // isUniqueViolation reports whether err is a Postgres unique_violation (23505).
 func isUniqueViolation(err error) bool {
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
-		return pgErr.Code == "23505"
-	}
-	return false
+	pgErr, ok := errors.AsType[*pgconn.PgError](err)
+	return ok && pgErr.Code == "23505"
 }

@@ -27,6 +27,9 @@ type Deps struct {
 	DB            *pgxpool.Pool
 	Redis         *redis.Client
 	AllowedOrigin string
+	// BaseURL is the externally reachable API origin (PING_BASE_URL), used to
+	// build full ping URLs (e.g. "<BaseURL>/p/<slug>") returned to clients.
+	BaseURL string
 
 	JWTPrivateKey    *rsa.PrivateKey
 	JWTPublicKey     *rsa.PublicKey
@@ -49,13 +52,29 @@ func New(addr string, deps Deps) *http.Server {
 
 	r.Get("/health", healthHandler(deps))
 
-	authStore := store.New(deps.DB, deps.Redis)
-	ah := newAuthHandler(authStore, deps)
+	st := store.New(deps.DB, deps.Redis)
+
+	ah := newAuthHandler(st, deps)
 	r.Route("/api/v1/auth", func(r chi.Router) {
 		r.Post("/register", ah.register)
 		r.Post("/login", ah.login)
 		r.Post("/refresh", ah.refresh)
 		r.Post("/logout", ah.logout)
+	})
+
+	mh := newMonitorHandler(st, deps)
+	r.Group(func(r chi.Router) {
+		r.Use(requireAuth(deps.JWTPublicKey))
+
+		r.Post("/api/v1/schedule/describe", mh.describeSchedule)
+
+		r.Route("/api/v1/monitors", func(r chi.Router) {
+			r.Post("/", mh.create)
+			r.Get("/", mh.list)
+			r.Get("/{id}", mh.get)
+			r.Patch("/{id}", mh.update)
+			r.Delete("/{id}", mh.delete)
+		})
 	})
 
 	return &http.Server{

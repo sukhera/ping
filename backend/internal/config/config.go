@@ -12,6 +12,7 @@ import (
 type Config struct {
 	Port              int
 	Env               string
+	BaseURL           string
 	DatabaseURL       string
 	RedisURL          string
 	CORSAllowedOrigin string
@@ -37,6 +38,11 @@ func Load() (Config, error) {
 	cfg.Port = port
 
 	cfg.Env, err = require("PING_ENV")
+	if err != nil {
+		return Config{}, err
+	}
+
+	cfg.BaseURL, err = require("PING_BASE_URL")
 	if err != nil {
 		return Config{}, err
 	}

@@ -17,6 +17,7 @@ func validEnv() map[string]string {
 	return map[string]string{
 		"PING_PORT":            "8080",
 		"PING_ENV":             "development",
+		"PING_BASE_URL":        "http://localhost:8080",
 		"DATABASE_URL":         "postgres://ping:ping@localhost:5432/ping?sslmode=disable",
 		"REDIS_URL":            "redis://localhost:6379/0",
 		"CORS_ALLOWED_ORIGIN":  "http://localhost:3000",
@@ -66,6 +67,7 @@ func TestLoad_MissingRequired(t *testing.T) {
 	}{
 		{name: "missing PING_PORT", unset: "PING_PORT", wantVarName: "PING_PORT"},
 		{name: "missing PING_ENV", unset: "PING_ENV", wantVarName: "PING_ENV"},
+		{name: "missing PING_BASE_URL", unset: "PING_BASE_URL", wantVarName: "PING_BASE_URL"},
 		{name: "missing DATABASE_URL", unset: "DATABASE_URL", wantVarName: "DATABASE_URL"},
 		{name: "missing REDIS_URL", unset: "REDIS_URL", wantVarName: "REDIS_URL"},
 		{name: "missing CORS_ALLOWED_ORIGIN", unset: "CORS_ALLOWED_ORIGIN", wantVarName: "CORS_ALLOWED_ORIGIN"},

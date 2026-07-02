@@ -20,6 +20,12 @@ type fakeQuerier struct {
 	createRefreshTokenFn        func(ctx context.Context, arg db.CreateRefreshTokenParams) (db.RefreshToken, error)
 	rotateRefreshTokenIfUnrotFn func(ctx context.Context, id pgtype.UUID) (db.RefreshToken, error)
 	revokeRefreshTokenFamFn     func(ctx context.Context, familyID pgtype.UUID) error
+
+	createMonitorFn        func(ctx context.Context, arg db.CreateMonitorParams) (db.Monitor, error)
+	getMonitorByIDFn       func(ctx context.Context, id pgtype.UUID) (db.Monitor, error)
+	listMonitorsByUserPgFn func(ctx context.Context, arg db.ListMonitorsByUserPageParams) ([]db.Monitor, error)
+	updateMonitorFn        func(ctx context.Context, arg db.UpdateMonitorParams) (db.Monitor, error)
+	deleteMonitorFn        func(ctx context.Context, arg db.DeleteMonitorParams) (int64, error)
 }
 
 func (f *fakeQuerier) CreateUser(ctx context.Context, arg db.CreateUserParams) (db.User, error) {
@@ -44,6 +50,26 @@ func (f *fakeQuerier) RotateRefreshTokenIfUnrotated(ctx context.Context, id pgty
 
 func (f *fakeQuerier) RevokeRefreshTokenFamily(ctx context.Context, familyID pgtype.UUID) error {
 	return f.revokeRefreshTokenFamFn(ctx, familyID)
+}
+
+func (f *fakeQuerier) CreateMonitor(ctx context.Context, arg db.CreateMonitorParams) (db.Monitor, error) {
+	return f.createMonitorFn(ctx, arg)
+}
+
+func (f *fakeQuerier) GetMonitorByID(ctx context.Context, id pgtype.UUID) (db.Monitor, error) {
+	return f.getMonitorByIDFn(ctx, id)
+}
+
+func (f *fakeQuerier) ListMonitorsByUserPage(ctx context.Context, arg db.ListMonitorsByUserPageParams) ([]db.Monitor, error) {
+	return f.listMonitorsByUserPgFn(ctx, arg)
+}
+
+func (f *fakeQuerier) UpdateMonitor(ctx context.Context, arg db.UpdateMonitorParams) (db.Monitor, error) {
+	return f.updateMonitorFn(ctx, arg)
+}
+
+func (f *fakeQuerier) DeleteMonitor(ctx context.Context, arg db.DeleteMonitorParams) (int64, error) {
+	return f.deleteMonitorFn(ctx, arg)
 }
 
 func newTestStore(q db.Querier) *Store {

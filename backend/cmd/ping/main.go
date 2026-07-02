@@ -72,6 +72,7 @@ func run(role string) error {
 			DB:               dbPool,
 			Redis:            redisClient,
 			AllowedOrigin:    cfg.CORSAllowedOrigin,
+			BaseURL:          cfg.BaseURL,
 			JWTPrivateKey:    jwtPriv,
 			JWTPublicKey:     jwtPub,
 			JWTAccessTTL:     cfg.JWTAccessTTL,
