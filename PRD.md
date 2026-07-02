@@ -59,6 +59,8 @@ Healthchecks.io is excellent but is a large Django app; Uptime Kuma is Node/Vue 
 | `down` | Grace exceeded, explicit `/fail` received, or probe failures confirmed. Alerts fire on entry. |
 | `paused` | Manually paused. Check-ins still recorded; no state evaluation, no alerts. |
 
+(`paused` is a presentation-level state: the schema stores it as a `paused_at` flag alongside the underlying lifecycle state, so resuming restores the prior state — see TECH-PLAN.md §2.3.)
+
 **Event** — an immutable record of anything notable: state transitions, check-ins, probe failures, alerts sent, config changes. Powers the activity feed and audit trail.
 
 ## 6. User stories

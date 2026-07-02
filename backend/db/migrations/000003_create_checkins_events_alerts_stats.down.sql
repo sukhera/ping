@@ -1,0 +1,5 @@
+DROP TABLE IF EXISTS daily_stats;
+DROP TABLE IF EXISTS alerts;
+DROP TABLE IF EXISTS events;
+DROP TABLE IF EXISTS probe_results;
+DROP TABLE IF EXISTS checkins;
