@@ -234,12 +234,15 @@ func TestEvaluateDueMonitors_CrashMidTickLeavesNoTrace(t *testing.T) {
 	}
 
 	// The rolled-back work left no trace: deadline intact, state unchanged, no rows.
+	// Compare against the seeded monitor's stored deadline (m came from
+	// getMonitor, so it's already at Postgres's microsecond precision) rather
+	// than the raw `past` value, whose sub-microsecond nanos don't round-trip.
 	got := e.getMonitor(t, m.ID)
 	if got.State != "late" {
 		t.Errorf("state = %q, want late (transition rolled back)", got.State)
 	}
-	if !got.NextDeadline.Valid || !got.NextDeadline.Time.Equal(past) {
-		t.Errorf("next_deadline = %v, want intact %v (deadline not lost)", got.NextDeadline.Time, past)
+	if !got.NextDeadline.Valid || !got.NextDeadline.Time.Equal(m.NextDeadline.Time) {
+		t.Errorf("next_deadline = %v, want intact %v (deadline not lost)", got.NextDeadline.Time, m.NextDeadline.Time)
 	}
 	if n := e.countRows(t, `SELECT count(*) FROM events WHERE monitor_id=$1`, m.ID); n != 0 {
 		t.Errorf("events = %d, want 0 after rollback", n)
