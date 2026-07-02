@@ -209,7 +209,7 @@ func (q *Queries) CreateMonitor(ctx context.Context, arg CreateMonitorParams) (M
 	return i, err
 }
 
-const deleteMonitor = `-- name: DeleteMonitor :exec
+const deleteMonitor = `-- name: DeleteMonitor :execrows
 DELETE FROM monitors
 WHERE id = $1 AND user_id = $2
 `
@@ -219,9 +219,14 @@ type DeleteMonitorParams struct {
 	UserID pgtype.UUID `json:"user_id"`
 }
 
-func (q *Queries) DeleteMonitor(ctx context.Context, arg DeleteMonitorParams) error {
-	_, err := q.db.Exec(ctx, deleteMonitor, arg.ID, arg.UserID)
-	return err
+// :execrows (not :exec) so the store layer can tell "deleted" apart from
+// "no matching row" (foreign or already-deleted id) via RowsAffected.
+func (q *Queries) DeleteMonitor(ctx context.Context, arg DeleteMonitorParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteMonitor, arg.ID, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const getMonitorByID = `-- name: GetMonitorByID :one
@@ -352,6 +357,79 @@ func (q *Queries) ListMonitorsByUser(ctx context.Context, userID pgtype.UUID) ([
 	return items, nil
 }
 
+const listMonitorsByUserPage = `-- name: ListMonitorsByUserPage :many
+SELECT id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at FROM monitors
+WHERE user_id = $1
+  AND (
+    $2::timestamptz IS NULL
+    OR (created_at, id) < ($2::timestamptz, $3::uuid)
+  )
+ORDER BY created_at DESC, id DESC
+LIMIT $4
+`
+
+type ListMonitorsByUserPageParams struct {
+	UserID          pgtype.UUID        `json:"user_id"`
+	CursorCreatedAt pgtype.Timestamptz `json:"cursor_created_at"`
+	CursorID        pgtype.UUID        `json:"cursor_id"`
+	PageLimit       int32              `json:"page_limit"`
+}
+
+// Cursor pagination on (created_at, id) rather than OFFSET: created_at alone
+// isn't unique, so the composite key keeps page boundaries stable under
+// concurrent inserts. sqlc.narg(cursor_created_at)/sqlc.narg(cursor_id) are
+// both NULL on the first page (no WHERE filter applied).
+func (q *Queries) ListMonitorsByUserPage(ctx context.Context, arg ListMonitorsByUserPageParams) ([]Monitor, error) {
+	rows, err := q.db.Query(ctx, listMonitorsByUserPage,
+		arg.UserID,
+		arg.CursorCreatedAt,
+		arg.CursorID,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Monitor{}
+	for rows.Next() {
+		var i Monitor
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.Kind,
+			&i.Slug,
+			&i.Name,
+			&i.ScheduleKind,
+			&i.PeriodS,
+			&i.CronExpr,
+			&i.Tz,
+			&i.GraceS,
+			&i.Url,
+			&i.Method,
+			&i.IntervalS,
+			&i.TimeoutS,
+			&i.FailThreshold,
+			&i.HttpConfig,
+			&i.State,
+			&i.FailStreak,
+			&i.LastCheckinAt,
+			&i.NextDeadline,
+			&i.NextProbeAt,
+			&i.AlertsMuted,
+			&i.PausedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const pauseMonitor = `-- name: PauseMonitor :exec
 UPDATE monitors
 SET paused_at = now()
@@ -382,4 +460,93 @@ type ResumeMonitorParams struct {
 func (q *Queries) ResumeMonitor(ctx context.Context, arg ResumeMonitorParams) error {
 	_, err := q.db.Exec(ctx, resumeMonitor, arg.ID, arg.UserID)
 	return err
+}
+
+const updateMonitor = `-- name: UpdateMonitor :one
+UPDATE monitors
+SET
+    name           = COALESCE($1, name),
+    schedule_kind  = COALESCE($2, schedule_kind),
+    period_s       = COALESCE($3, period_s),
+    cron_expr      = COALESCE($4, cron_expr),
+    tz             = COALESCE($5, tz),
+    grace_s        = COALESCE($6, grace_s),
+    url            = COALESCE($7, url),
+    method         = COALESCE($8, method),
+    interval_s     = COALESCE($9, interval_s),
+    timeout_s      = COALESCE($10, timeout_s),
+    fail_threshold = COALESCE($11, fail_threshold),
+    http_config    = COALESCE($12::jsonb, http_config),
+    updated_at     = now()
+WHERE id = $13 AND user_id = $14
+RETURNING id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at
+`
+
+type UpdateMonitorParams struct {
+	Name          pgtype.Text `json:"name"`
+	ScheduleKind  pgtype.Text `json:"schedule_kind"`
+	PeriodS       pgtype.Int4 `json:"period_s"`
+	CronExpr      pgtype.Text `json:"cron_expr"`
+	Tz            pgtype.Text `json:"tz"`
+	GraceS        pgtype.Int4 `json:"grace_s"`
+	Url           pgtype.Text `json:"url"`
+	Method        pgtype.Text `json:"method"`
+	IntervalS     pgtype.Int4 `json:"interval_s"`
+	TimeoutS      pgtype.Int4 `json:"timeout_s"`
+	FailThreshold pgtype.Int4 `json:"fail_threshold"`
+	HttpConfig    []byte      `json:"http_config"`
+	ID            pgtype.UUID `json:"id"`
+	UserID        pgtype.UUID `json:"user_id"`
+}
+
+// Partial update: sqlc.narg fields left NULL keep their current value via
+// COALESCE. Ownership-enforced by the id + user_id WHERE, matching
+// Pause/Resume/Delete — a foreign monitor_id updates zero rows rather than
+// erroring, so the store layer must check RowsAffected/pgx.ErrNoRows.
+func (q *Queries) UpdateMonitor(ctx context.Context, arg UpdateMonitorParams) (Monitor, error) {
+	row := q.db.QueryRow(ctx, updateMonitor,
+		arg.Name,
+		arg.ScheduleKind,
+		arg.PeriodS,
+		arg.CronExpr,
+		arg.Tz,
+		arg.GraceS,
+		arg.Url,
+		arg.Method,
+		arg.IntervalS,
+		arg.TimeoutS,
+		arg.FailThreshold,
+		arg.HttpConfig,
+		arg.ID,
+		arg.UserID,
+	)
+	var i Monitor
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Kind,
+		&i.Slug,
+		&i.Name,
+		&i.ScheduleKind,
+		&i.PeriodS,
+		&i.CronExpr,
+		&i.Tz,
+		&i.GraceS,
+		&i.Url,
+		&i.Method,
+		&i.IntervalS,
+		&i.TimeoutS,
+		&i.FailThreshold,
+		&i.HttpConfig,
+		&i.State,
+		&i.FailStreak,
+		&i.LastCheckinAt,
+		&i.NextDeadline,
+		&i.NextProbeAt,
+		&i.AlertsMuted,
+		&i.PausedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }

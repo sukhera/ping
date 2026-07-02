@@ -25,6 +25,43 @@ SELECT * FROM monitors
 WHERE user_id = $1
 ORDER BY created_at DESC;
 
+-- Cursor pagination on (created_at, id) rather than OFFSET: created_at alone
+-- isn't unique, so the composite key keeps page boundaries stable under
+-- concurrent inserts. sqlc.narg(cursor_created_at)/sqlc.narg(cursor_id) are
+-- both NULL on the first page (no WHERE filter applied).
+-- name: ListMonitorsByUserPage :many
+SELECT * FROM monitors
+WHERE user_id = sqlc.arg(user_id)
+  AND (
+    sqlc.narg(cursor_created_at)::timestamptz IS NULL
+    OR (created_at, id) < (sqlc.narg(cursor_created_at)::timestamptz, sqlc.narg(cursor_id)::uuid)
+  )
+ORDER BY created_at DESC, id DESC
+LIMIT sqlc.arg(page_limit);
+
+-- name: UpdateMonitor :one
+-- Partial update: sqlc.narg fields left NULL keep their current value via
+-- COALESCE. Ownership-enforced by the id + user_id WHERE, matching
+-- Pause/Resume/Delete — a foreign monitor_id updates zero rows rather than
+-- erroring, so the store layer must check RowsAffected/pgx.ErrNoRows.
+UPDATE monitors
+SET
+    name           = COALESCE(sqlc.narg(name), name),
+    schedule_kind  = COALESCE(sqlc.narg(schedule_kind), schedule_kind),
+    period_s       = COALESCE(sqlc.narg(period_s), period_s),
+    cron_expr      = COALESCE(sqlc.narg(cron_expr), cron_expr),
+    tz             = COALESCE(sqlc.narg(tz), tz),
+    grace_s        = COALESCE(sqlc.narg(grace_s), grace_s),
+    url            = COALESCE(sqlc.narg(url), url),
+    method         = COALESCE(sqlc.narg(method), method),
+    interval_s     = COALESCE(sqlc.narg(interval_s), interval_s),
+    timeout_s      = COALESCE(sqlc.narg(timeout_s), timeout_s),
+    fail_threshold = COALESCE(sqlc.narg(fail_threshold), fail_threshold),
+    http_config    = COALESCE(sqlc.narg(http_config)::jsonb, http_config),
+    updated_at     = now()
+WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id)
+RETURNING *;
+
 -- name: PauseMonitor :exec
 UPDATE monitors
 SET paused_at = now()
@@ -35,7 +72,9 @@ UPDATE monitors
 SET paused_at = NULL
 WHERE id = $1 AND user_id = $2;
 
--- name: DeleteMonitor :exec
+-- :execrows (not :exec) so the store layer can tell "deleted" apart from
+-- "no matching row" (foreign or already-deleted id) via RowsAffected.
+-- name: DeleteMonitor :execrows
 DELETE FROM monitors
 WHERE id = $1 AND user_id = $2;
 

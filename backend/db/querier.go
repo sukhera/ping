@@ -26,7 +26,9 @@ type Querier interface {
 	CreateRefreshToken(ctx context.Context, arg CreateRefreshTokenParams) (RefreshToken, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
 	DeleteExpiredRefreshTokens(ctx context.Context) error
-	DeleteMonitor(ctx context.Context, arg DeleteMonitorParams) error
+	// :execrows (not :exec) so the store layer can tell "deleted" apart from
+	// "no matching row" (foreign or already-deleted id) via RowsAffected.
+	DeleteMonitor(ctx context.Context, arg DeleteMonitorParams) (int64, error)
 	GetAPIKeyByHash(ctx context.Context, keyHash string) (ApiKey, error)
 	GetMonitorByID(ctx context.Context, id pgtype.UUID) (Monitor, error)
 	GetMonitorBySlug(ctx context.Context, slug string) (Monitor, error)
@@ -35,6 +37,11 @@ type Querier interface {
 	GetUserByID(ctx context.Context, id pgtype.UUID) (User, error)
 	ListAPIKeysByUser(ctx context.Context, userID pgtype.UUID) ([]ApiKey, error)
 	ListMonitorsByUser(ctx context.Context, userID pgtype.UUID) ([]Monitor, error)
+	// Cursor pagination on (created_at, id) rather than OFFSET: created_at alone
+	// isn't unique, so the composite key keeps page boundaries stable under
+	// concurrent inserts. sqlc.narg(cursor_created_at)/sqlc.narg(cursor_id) are
+	// both NULL on the first page (no WHERE filter applied).
+	ListMonitorsByUserPage(ctx context.Context, arg ListMonitorsByUserPageParams) ([]Monitor, error)
 	PauseMonitor(ctx context.Context, arg PauseMonitorParams) error
 	ResumeMonitor(ctx context.Context, arg ResumeMonitorParams) error
 	RevokeAPIKey(ctx context.Context, arg RevokeAPIKeyParams) error
@@ -46,6 +53,11 @@ type Querier interface {
 	// clause before rotated_at becomes non-null.
 	RotateRefreshTokenIfUnrotated(ctx context.Context, id pgtype.UUID) (RefreshToken, error)
 	TouchAPIKeyLastUsed(ctx context.Context, id pgtype.UUID) error
+	// Partial update: sqlc.narg fields left NULL keep their current value via
+	// COALESCE. Ownership-enforced by the id + user_id WHERE, matching
+	// Pause/Resume/Delete — a foreign monitor_id updates zero rows rather than
+	// erroring, so the store layer must check RowsAffected/pgx.ErrNoRows.
+	UpdateMonitor(ctx context.Context, arg UpdateMonitorParams) (Monitor, error)
 }
 
 var _ Querier = (*Queries)(nil)
