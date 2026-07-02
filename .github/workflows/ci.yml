@@ -218,11 +218,18 @@ jobs:
           openssl genrsa -out backend/keys/jwt_private.pem 2048
           openssl rsa -in backend/keys/jwt_private.pem -pubout -out backend/keys/jwt_public.pem
 
+      - name: Build backend API
+        # A pre-built binary, not `go run`, so the health-check loop below
+        # only waits on process startup — a cold `go run` compile (no build
+        # cache on a fresh runner) can alone exceed a 30s polling window,
+        # timing the health check out before the server ever listens.
+        run: cd backend && go build -o /tmp/ping-api ./cmd/ping
+
       - name: Start backend API
         run: |
-          cd backend && go run ./cmd/ping --role=api &
-          for attempt in $(seq 1 30); do
-            echo "waiting for backend (attempt $attempt/30)"
+          cd backend && /tmp/ping-api --role=api &
+          for attempt in $(seq 1 60); do
+            echo "waiting for backend (attempt $attempt/60)"
             curl -sf http://localhost:8080/health && exit 0
             sleep 1
           done
@@ -245,8 +252,8 @@ jobs:
       - name: Start frontend dev server
         run: |
           cd frontend && npm run dev &
-          for attempt in $(seq 1 30); do
-            echo "waiting for frontend (attempt $attempt/30)"
+          for attempt in $(seq 1 60); do
+            echo "waiting for frontend (attempt $attempt/60)"
             curl -sf http://localhost:3000 && exit 0
             sleep 1
           done
