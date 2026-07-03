@@ -63,6 +63,29 @@ type MonitorPage struct {
 	NextCursor string
 }
 
+// ListMonitorsFilter narrows ListMonitors. A zero-value field means "no
+// filter" — validation of allowed Kind/DisplayState values is the handler's
+// job (server/monitor.go), matching this file's existing convention that
+// request-shape validation lives in the handler layer.
+type ListMonitorsFilter struct {
+	Search       string
+	Kind         string
+	DisplayState string
+}
+
+// DailyStat is one monitor-day rollup row, the domain representation of the
+// daily_stats table. Unpopulated until the nightly rollup job (PING-020)
+// ships — ListDailyStats returning no rows for a monitor means "no data yet",
+// not an error.
+type DailyStat struct {
+	Day        time.Time
+	Checkins   int32
+	Failures   int32
+	DowntimeS  int32
+	LatencyP50 *int32
+	LatencyP95 *int32
+}
+
 // CreateMonitorParams carries the fields callers can set on create. Runtime
 // fields (state, fail_streak, timestamps) are DB-owned and not settable here.
 type CreateMonitorParams struct {
@@ -187,16 +210,20 @@ func (s *Store) GetMonitor(ctx context.Context, id, callerUserID string) (Monito
 
 // ListMonitors returns one cursor-paginated page of userID's monitors,
 // ordered newest first. cursor is the opaque string from a previous page's
-// MonitorPage.NextCursor, or empty for the first page.
-func (s *Store) ListMonitors(ctx context.Context, userID, cursor string, limit int32) (MonitorPage, error) {
+// MonitorPage.NextCursor, or empty for the first page. filter narrows by
+// search/kind/display_state (all optional).
+func (s *Store) ListMonitors(ctx context.Context, userID, cursor string, limit int32, filter ListMonitorsFilter) (MonitorPage, error) {
 	userUUID, err := pgUUID(userID)
 	if err != nil {
 		return MonitorPage{}, err
 	}
 
 	params := db.ListMonitorsByUserPageParams{
-		UserID:    userUUID,
-		PageLimit: limit,
+		UserID:       userUUID,
+		PageLimit:    limit,
+		Search:       textOrNull(filter.Search),
+		Kind:         textOrNull(filter.Kind),
+		DisplayState: textOrNull(filter.DisplayState),
 	}
 	if cursor != "" {
 		createdAt, id, err := decodeCursor(cursor)
@@ -340,6 +367,47 @@ func (s *Store) DeleteMonitor(ctx context.Context, id, callerUserID string) erro
 		return newHTTPError(ErrNotFound, http.StatusNotFound)
 	}
 	return nil
+}
+
+// ListDailyStats fetches daily_stats rows for the given monitors since the
+// given date (inclusive), bucketed by monitor id for O(1) lookup by callers
+// building a list response. Monitors with no rows in the window are simply
+// absent from the returned map (not an error) — see DailyStat's doc comment.
+func (s *Store) ListDailyStats(ctx context.Context, monitorIDs []string, since time.Time) (map[string][]DailyStat, error) {
+	if len(monitorIDs) == 0 {
+		return map[string][]DailyStat{}, nil
+	}
+
+	ids := make([]pgtype.UUID, len(monitorIDs))
+	for i, id := range monitorIDs {
+		u, err := pgUUID(id)
+		if err != nil {
+			return nil, err
+		}
+		ids[i] = u
+	}
+
+	rows, err := s.q.ListDailyStatsByMonitorIDs(ctx, db.ListDailyStatsByMonitorIDsParams{
+		MonitorIds: ids,
+		Since:      pgtype.Date{Time: since, Valid: true},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("store: list daily stats: %w", err)
+	}
+
+	byMonitor := make(map[string][]DailyStat, len(monitorIDs))
+	for _, row := range rows {
+		monitorID := row.MonitorID.String()
+		byMonitor[monitorID] = append(byMonitor[monitorID], DailyStat{
+			Day:        row.Day.Time,
+			Checkins:   row.Checkins,
+			Failures:   row.Failures,
+			DowntimeS:  row.DowntimeS,
+			LatencyP50: int32Ptr(row.LatencyP50),
+			LatencyP95: int32Ptr(row.LatencyP95),
+		})
+	}
+	return byMonitor, nil
 }
 
 func toMonitor(row db.Monitor) Monitor {

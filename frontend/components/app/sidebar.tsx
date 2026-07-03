@@ -12,7 +12,9 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { useMonitors } from "@/hooks/use-monitors";
 import { sessionKeys } from "@/hooks/use-session";
+import { computeStats } from "@/lib/monitor-stats";
 import { cn } from "@/lib/utils";
 import { logout, type User } from "@/lib/api";
 
@@ -26,6 +28,12 @@ export function Sidebar({ user }: { user: User }) {
   const pathname = usePathname();
   const router = useRouter();
   const queryClient = useQueryClient();
+
+  // Same query key/params as the dashboard's unfiltered useMonitors({})
+  // call — TanStack Query dedupes identical keys, so this shares one cached
+  // fetch (and one 30s poll) rather than firing a second request.
+  const { data } = useMonitors({});
+  const stats = computeStats(data?.monitors ?? []);
 
   const logoutMutation = useMutation({
     mutationFn: logout,
@@ -41,23 +49,21 @@ export function Sidebar({ user }: { user: User }) {
         <Logo />
       </div>
 
-      {/* Global status summary — placeholder until PING-013 wires real
-          monitor aggregation; zero-state is intentional, not a bug. */}
       <div
         title="Global status"
         className="mb-[18px] flex gap-3 rounded-[var(--radius)] border border-border bg-surface-2 px-3 py-2.5 text-[12.5px] text-text-dim"
       >
         <span>
           <span className="mr-1.5 inline-block size-[7px] rounded-full bg-up align-middle" />
-          <b className="font-medium text-text">0</b> up
+          <b className="font-medium text-text">{stats.up}</b> up
         </span>
         <span>
           <span className="mr-1.5 inline-block size-[7px] rounded-full bg-down align-middle" />
-          <b className="font-medium text-text">0</b> down
+          <b className="font-medium text-text">{stats.down}</b> down
         </span>
         <span>
           <span className="mr-1.5 inline-block size-[7px] rounded-full bg-late align-middle" />
-          <b className="font-medium text-text">0</b> late
+          <b className="font-medium text-text">{stats.late}</b> late
         </span>
       </div>
 

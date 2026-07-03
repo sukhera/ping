@@ -182,7 +182,7 @@ func TestListMonitors_SetsNextCursorOnlyWhenPageIsFull(t *testing.T) {
 	}
 	s := newTestStore(q)
 
-	full, err := s.ListMonitors(context.Background(), userID, "", 2)
+	full, err := s.ListMonitors(context.Background(), userID, "", 2, ListMonitorsFilter{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestListMonitors_SetsNextCursorOnlyWhenPageIsFull(t *testing.T) {
 		t.Error("expected NextCursor to be set when the page is full (more results may exist)")
 	}
 
-	partial, err := s.ListMonitors(context.Background(), userID, "", 5)
+	partial, err := s.ListMonitors(context.Background(), userID, "", 5, ListMonitorsFilter{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -211,7 +211,7 @@ func TestListMonitors_DecodesCursorIntoQueryParams(t *testing.T) {
 	}
 	s := newTestStore(q)
 
-	first, err := s.ListMonitors(context.Background(), userID, "", 1)
+	first, err := s.ListMonitors(context.Background(), userID, "", 1, ListMonitorsFilter{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -221,7 +221,7 @@ func TestListMonitors_DecodesCursorIntoQueryParams(t *testing.T) {
 	rowUUID.Bytes[0] = 3
 	cursor := encodeCursor(time.Now(), rowUUID)
 
-	if _, err := s.ListMonitors(context.Background(), userID, cursor, 1); err != nil {
+	if _, err := s.ListMonitors(context.Background(), userID, cursor, 1, ListMonitorsFilter{}); err != nil {
 		t.Fatalf("unexpected error decoding valid cursor: %v", err)
 	}
 	if !gotCursor.Valid {
@@ -233,7 +233,7 @@ func TestListMonitors_InvalidCursorReturns400(t *testing.T) {
 	_, userID := testUUID(t)
 	s := newTestStore(&fakeQuerier{})
 
-	_, err := s.ListMonitors(context.Background(), userID, "not-a-valid-cursor", 10)
+	_, err := s.ListMonitors(context.Background(), userID, "not-a-valid-cursor", 10, ListMonitorsFilter{})
 	if err == nil {
 		t.Fatal("expected error for malformed cursor")
 	}

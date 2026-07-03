@@ -281,6 +281,270 @@ func TestMonitor_ListPagination_StableUnderConcurrentInsert(t *testing.T) {
 	}
 }
 
+// TestMonitor_ListFilterBySearch_MatchesNameOrSlug is the PING-013 search AC:
+// ?q= matches on name or slug, case-insensitive substring.
+func TestMonitor_ListFilterBySearch_MatchesNameOrSlug(t *testing.T) {
+	deps := heartbeatMonitorDeps(t)
+	srv := server.New(":0", deps)
+	token, _ := registerUser(t, srv)
+
+	createOne := func(name string) map[string]any {
+		body := fmt.Sprintf(`{"kind":"heartbeat","name":%q,"schedule_kind":"period","period_s":300,"tz":"UTC","grace_s":60}`, name)
+		rec := doAuthedJSON(t, srv, http.MethodPost, "/api/v1/monitors", body, token)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create %q status = %d, want 201; body = %s", name, rec.Code, rec.Body.String())
+		}
+		var created map[string]any
+		if err := json.NewDecoder(rec.Body).Decode(&created); err != nil {
+			t.Fatalf("decode create response: %v", err)
+		}
+		return created
+	}
+	createOne("nightly-backup")
+	createOne("cert-renewal")
+
+	rec := doAuthedJSON(t, srv, http.MethodGet, "/api/v1/monitors/?q=NIGHTLY", "", token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Monitors []map[string]any `json:"monitors"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Monitors) != 1 || resp.Monitors[0]["name"] != "nightly-backup" {
+		t.Fatalf("search %q = %+v, want exactly nightly-backup", "NIGHTLY", resp.Monitors)
+	}
+}
+
+// TestMonitor_ListFilterByKind_HeartbeatOnly is the PING-013 kind-filter AC.
+func TestMonitor_ListFilterByKind_HeartbeatOnly(t *testing.T) {
+	deps := heartbeatMonitorDeps(t)
+	srv := server.New(":0", deps)
+	token, _ := registerUser(t, srv)
+
+	rec := doAuthedJSON(t, srv, http.MethodPost, "/api/v1/monitors",
+		`{"kind":"heartbeat","name":"beat","schedule_kind":"period","period_s":300,"tz":"UTC","grace_s":60}`, token)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create heartbeat status = %d, want 201; body = %s", rec.Code, rec.Body.String())
+	}
+	rec = doAuthedJSON(t, srv, http.MethodPost, "/api/v1/monitors",
+		`{"kind":"http","name":"http check","url":"https://example.com","method":"GET","interval_s":60,"timeout_s":10}`, token)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create http status = %d, want 201; body = %s", rec.Code, rec.Body.String())
+	}
+
+	rec = doAuthedJSON(t, srv, http.MethodGet, "/api/v1/monitors/?kind=heartbeat", "", token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Monitors []map[string]any `json:"monitors"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Monitors) != 1 || resp.Monitors[0]["kind"] != "heartbeat" {
+		t.Fatalf("kind=heartbeat = %+v, want exactly 1 heartbeat monitor", resp.Monitors)
+	}
+}
+
+// TestMonitor_ListFilterByState_PausedMatchesPausedAtNotRawState is the
+// critical display_state-vs-raw-state semantic: a paused monitor's raw state
+// is frozen at whatever it was pre-pause, but ?state= filters must use the
+// UI-visible display_state, not the stale raw column.
+func TestMonitor_ListFilterByState_PausedMatchesPausedAtNotRawState(t *testing.T) {
+	deps := heartbeatMonitorDeps(t)
+	srv := server.New(":0", deps)
+	token, _ := registerUser(t, srv)
+
+	rec := doAuthedJSON(t, srv, http.MethodPost, "/api/v1/monitors",
+		`{"kind":"heartbeat","name":"to-be-paused","schedule_kind":"period","period_s":300,"tz":"UTC","grace_s":60}`, token)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, want 201; body = %s", rec.Code, rec.Body.String())
+	}
+	var created map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	id, _ := created["id"].(string)
+	if created["state"] != "new" {
+		t.Fatalf("state after create = %v, want new", created["state"])
+	}
+
+	rec = doAuthedJSON(t, srv, http.MethodPost, "/api/v1/monitors/"+id+"/pause", "", token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("pause status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+
+	// ?state=new must now EXCLUDE the paused monitor, even though its raw
+	// state column is still "new" (pause doesn't touch state — TECH-PLAN §2.3).
+	rec = doAuthedJSON(t, srv, http.MethodGet, "/api/v1/monitors/?state=new", "", token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	var newResp struct {
+		Monitors []map[string]any `json:"monitors"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&newResp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(newResp.Monitors) != 0 {
+		t.Fatalf("state=new = %+v, want empty (paused monitor must not match its frozen raw state)", newResp.Monitors)
+	}
+
+	// ?state=paused must INCLUDE it.
+	rec = doAuthedJSON(t, srv, http.MethodGet, "/api/v1/monitors/?state=paused", "", token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	var pausedResp struct {
+		Monitors []map[string]any `json:"monitors"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&pausedResp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(pausedResp.Monitors) != 1 || pausedResp.Monitors[0]["id"] != id {
+		t.Fatalf("state=paused = %+v, want exactly the paused monitor", pausedResp.Monitors)
+	}
+}
+
+// TestMonitor_ListFilterByState_InvalidStateReturns400 rejects unknown state
+// values rather than silently ignoring them or 500ing.
+func TestMonitor_ListFilterByState_InvalidStateReturns400(t *testing.T) {
+	deps := heartbeatMonitorDeps(t)
+	srv := server.New(":0", deps)
+	token, _ := registerUser(t, srv)
+
+	rec := doAuthedJSON(t, srv, http.MethodGet, "/api/v1/monitors/?state=bogus", "", token)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestMonitor_ListFilterByKind_InvalidKindReturns400 mirrors the state case.
+func TestMonitor_ListFilterByKind_InvalidKindReturns400(t *testing.T) {
+	deps := heartbeatMonitorDeps(t)
+	srv := server.New(":0", deps)
+	token, _ := registerUser(t, srv)
+
+	rec := doAuthedJSON(t, srv, http.MethodGet, "/api/v1/monitors/?kind=bogus", "", token)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestMonitor_ScheduleSummaryPresent_HeartbeatAndHTTP is the PING-013
+// schedule_summary AC: both monitor kinds get a human-readable row string in
+// list responses, computed server-side (heartbeat via schedule.Describe,
+// http via a hand-built "every Ns · Nx confirm" string).
+func TestMonitor_ScheduleSummaryPresent_HeartbeatAndHTTP(t *testing.T) {
+	deps := heartbeatMonitorDeps(t)
+	srv := server.New(":0", deps)
+	token, _ := registerUser(t, srv)
+
+	rec := doAuthedJSON(t, srv, http.MethodPost, "/api/v1/monitors",
+		`{"kind":"heartbeat","name":"daily beat","schedule_kind":"cron","cron_expr":"0 4 * * *","tz":"Europe/Berlin","grace_s":1800}`, token)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create heartbeat status = %d, want 201; body = %s", rec.Code, rec.Body.String())
+	}
+	var heartbeat map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&heartbeat); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	wantHeartbeat := "every day at 04:00 (Europe/Berlin); alert if 30 min late"
+	if heartbeat["schedule_summary"] != wantHeartbeat {
+		t.Errorf("heartbeat schedule_summary = %v, want %q", heartbeat["schedule_summary"], wantHeartbeat)
+	}
+
+	rec = doAuthedJSON(t, srv, http.MethodPost, "/api/v1/monitors",
+		`{"kind":"http","name":"api check","url":"https://example.com","method":"GET","interval_s":60,"timeout_s":10,"fail_threshold":2}`, token)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create http status = %d, want 201; body = %s", rec.Code, rec.Body.String())
+	}
+	var httpMon map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&httpMon); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	wantHTTP := "every 60s · 2× confirm"
+	if httpMon["schedule_summary"] != wantHTTP {
+		t.Errorf("http schedule_summary = %v, want %q", httpMon["schedule_summary"], wantHTTP)
+	}
+
+	// Confirm schedule_summary also rides along on the list response, not just
+	// create — that's the PING-013 row's actual data source.
+	rec = doAuthedJSON(t, srv, http.MethodGet, "/api/v1/monitors/", "", token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	var listResp struct {
+		Monitors []map[string]any `json:"monitors"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&listResp); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	for _, m := range listResp.Monitors {
+		if m["schedule_summary"] == nil || m["schedule_summary"] == "" {
+			t.Errorf("list monitor %v missing schedule_summary", m["id"])
+		}
+	}
+}
+
+// TestMonitor_DailyStatsAbsentWhenEmpty_ListOnly asserts the PING-013
+// daily_stats embedding: absent (omitempty), not null or an error, when the
+// table has no rows for a monitor (true today for every monitor — the
+// rollup job, PING-020, hasn't shipped). Also asserts daily_stats is NOT
+// present on a single-monitor GET response — only the list handler embeds it.
+func TestMonitor_DailyStatsAbsentWhenEmpty_ListOnly(t *testing.T) {
+	deps := heartbeatMonitorDeps(t)
+	srv := server.New(":0", deps)
+	token, _ := registerUser(t, srv)
+
+	rec := doAuthedJSON(t, srv, http.MethodPost, "/api/v1/monitors",
+		`{"kind":"heartbeat","name":"fresh monitor","schedule_kind":"period","period_s":300,"tz":"UTC","grace_s":60}`, token)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, want 201; body = %s", rec.Code, rec.Body.String())
+	}
+	var created map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	id, _ := created["id"].(string)
+	if _, ok := created["daily_stats"]; ok {
+		t.Errorf("create response has daily_stats = %v, want absent", created["daily_stats"])
+	}
+
+	rec = doAuthedJSON(t, srv, http.MethodGet, "/api/v1/monitors/"+id, "", token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	var got map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode get response: %v", err)
+	}
+	if _, ok := got["daily_stats"]; ok {
+		t.Errorf("get response has daily_stats = %v, want absent (only list embeds it)", got["daily_stats"])
+	}
+
+	rec = doAuthedJSON(t, srv, http.MethodGet, "/api/v1/monitors/", "", token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	var listResp struct {
+		Monitors []map[string]any `json:"monitors"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&listResp); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if len(listResp.Monitors) != 1 {
+		t.Fatalf("expected 1 monitor in list, got %d", len(listResp.Monitors))
+	}
+	if _, ok := listResp.Monitors[0]["daily_stats"]; ok {
+		t.Errorf("list monitor has daily_stats = %v, want absent (table has no rows yet)", listResp.Monitors[0]["daily_stats"])
+	}
+}
+
 func TestDescribeSchedule_Integration(t *testing.T) {
 	deps := heartbeatMonitorDeps(t)
 	srv := server.New(":0", deps)

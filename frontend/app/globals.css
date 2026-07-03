@@ -135,3 +135,20 @@
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
 }
+
+/* DESIGN.md §8 "live pulse": one expanding ring on a fresh check-in.
+   motion-reduce:hidden on the element (status-chip.tsx) is the actual
+   prefers-reduced-motion gate; this keyframe just defines the motion. */
+@keyframes status-pulse {
+  0% {
+    transform: scale(1);
+    opacity: 0.7;
+  }
+  70% {
+    transform: scale(3.2);
+    opacity: 0;
+  }
+  100% {
+    opacity: 0;
+  }
+}

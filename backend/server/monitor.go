@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -37,9 +38,10 @@ const (
 type monitorStore interface {
 	CreateMonitor(ctx context.Context, p store.CreateMonitorParams) (store.Monitor, error)
 	GetMonitor(ctx context.Context, id, callerUserID string) (store.Monitor, error)
-	ListMonitors(ctx context.Context, userID, cursor string, limit int32) (store.MonitorPage, error)
+	ListMonitors(ctx context.Context, userID, cursor string, limit int32, filter store.ListMonitorsFilter) (store.MonitorPage, error)
 	UpdateMonitor(ctx context.Context, id, callerUserID string, p store.UpdateMonitorParams) (store.Monitor, error)
 	DeleteMonitor(ctx context.Context, id, callerUserID string) error
+	ListDailyStats(ctx context.Context, monitorIDs []string, since time.Time) (map[string][]store.DailyStat, error)
 
 	PauseMonitor(ctx context.Context, id, callerUserID string) (store.Monitor, error)
 	ResumeMonitor(ctx context.Context, id, callerUserID string, now time.Time) (store.Monitor, error)
@@ -131,6 +133,26 @@ type monitorResponse struct {
 	PausedAt      *time.Time `json:"paused_at,omitempty"`
 	CreatedAt     time.Time  `json:"created_at"`
 	UpdatedAt     time.Time  `json:"updated_at"`
+
+	// ScheduleSummary is a human-readable schedule description (PING-013 row
+	// column): schedule.Describe() output for heartbeat monitors, a hand-built
+	// "every Ns · Nx confirm" string for http monitors (not a schedule.Describe
+	// concept — http monitors have no grace/deadline math).
+	ScheduleSummary string `json:"schedule_summary,omitempty"`
+
+	// DailyStats is only populated by the list handler (PING-013 uptime bar) —
+	// single-monitor responses (get/create/update/pause/...) omit it, they
+	// don't need 90 rows of payload. Empty/omitted means "no data yet", not an
+	// error — the daily_stats table is unpopulated until PING-020's rollup job
+	// ships.
+	DailyStats []dailyStatResponse `json:"daily_stats,omitempty"`
+}
+
+type dailyStatResponse struct {
+	Day       string `json:"day"`
+	Checkins  int32  `json:"checkins"`
+	Failures  int32  `json:"failures"`
+	DowntimeS int32  `json:"downtime_s"`
 }
 
 func toMonitorResponse(m store.Monitor, baseURL string) monitorResponse {
@@ -162,8 +184,34 @@ func toMonitorResponse(m store.Monitor, baseURL string) monitorResponse {
 	}
 	if m.Kind == "heartbeat" {
 		resp.PingURL = baseURL + "/p/" + m.Slug
+		if desc, err := schedule.Describe(scheduleConfigFromMonitor(m)); err == nil {
+			resp.ScheduleSummary = desc
+		}
+		// err != nil would mean an already-persisted monitor's config no longer
+		// validates (e.g. a future stricter schedule.Validate) — degrade to no
+		// summary rather than 500 the whole response over a display string.
+	} else if m.IntervalS != nil && m.FailThreshold != nil {
+		resp.ScheduleSummary = fmt.Sprintf("every %ds · %d× confirm", *m.IntervalS, *m.FailThreshold)
 	}
 	return resp
+}
+
+// scheduleConfigFromMonitor is scheduleConfigFromFields's counterpart for an
+// already-persisted store.Monitor rather than a request body — used to
+// compute ScheduleSummary for every monitor-returning response.
+func scheduleConfigFromMonitor(m store.Monitor) schedule.Config {
+	cfg := schedule.Config{
+		Kind:     schedule.Kind(m.ScheduleKind),
+		CronExpr: m.CronExpr,
+		TZ:       m.TZ,
+	}
+	if m.PeriodS != nil {
+		cfg.Period = time.Duration(*m.PeriodS) * time.Second
+	}
+	if m.GraceS != nil {
+		cfg.Grace = time.Duration(*m.GraceS) * time.Second
+	}
+	return cfg
 }
 
 func (h *monitorHandler) create(w http.ResponseWriter, r *http.Request) {
@@ -202,9 +250,15 @@ type monitorListResponse struct {
 	NextCursor string            `json:"next_cursor,omitempty"`
 }
 
+// dailyStatsWindowDays is the uptime bar's window (PING-013 DESIGN.md §8):
+// 90 cells including today, so "since" is today minus 89 days.
+const dailyStatsWindowDays = 90
+
 func (h *monitorHandler) list(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+
 	limit := int32(defaultPageLimit)
-	if raw := r.URL.Query().Get("limit"); raw != "" {
+	if raw := q.Get("limit"); raw != "" {
 		n, err := parseBoundedInt(raw, 1, maxPageLimit)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid limit"})
@@ -212,17 +266,58 @@ func (h *monitorHandler) list(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = n
 	}
-	cursor := r.URL.Query().Get("cursor")
+	cursor := q.Get("cursor")
 
-	page, err := h.store.ListMonitors(r.Context(), userIDFromContext(r.Context()), cursor, limit)
+	filter := store.ListMonitorsFilter{Search: q.Get("q")}
+	if kind := q.Get("kind"); kind != "" {
+		if kind != "heartbeat" && kind != "http" {
+			writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid kind"})
+			return
+		}
+		filter.Kind = kind
+	}
+	if state := q.Get("state"); state != "" {
+		switch state {
+		case "up", "down", "late", "new", "paused":
+			filter.DisplayState = state
+		default:
+			writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid state"})
+			return
+		}
+	}
+
+	page, err := h.store.ListMonitors(r.Context(), userIDFromContext(r.Context()), cursor, limit, filter)
 	if err != nil {
 		writeError(w, r, err)
 		return
 	}
 
+	var statsByMonitor map[string][]store.DailyStat
+	if len(page.Monitors) > 0 {
+		ids := make([]string, len(page.Monitors))
+		for i, m := range page.Monitors {
+			ids[i] = m.ID
+		}
+		since := time.Now().AddDate(0, 0, -(dailyStatsWindowDays - 1))
+		statsByMonitor, err = h.store.ListDailyStats(r.Context(), ids, since)
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+	}
+
 	resp := monitorListResponse{Monitors: make([]monitorResponse, len(page.Monitors)), NextCursor: page.NextCursor}
 	for i, m := range page.Monitors {
-		resp.Monitors[i] = toMonitorResponse(m, h.deps.BaseURL)
+		mr := toMonitorResponse(m, h.deps.BaseURL)
+		for _, ds := range statsByMonitor[m.ID] {
+			mr.DailyStats = append(mr.DailyStats, dailyStatResponse{
+				Day:       ds.Day.Format("2006-01-02"),
+				Checkins:  ds.Checkins,
+				Failures:  ds.Failures,
+				DowntimeS: ds.DowntimeS,
+			})
+		}
+		resp.Monitors[i] = mr
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

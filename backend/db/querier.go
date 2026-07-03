@@ -74,6 +74,11 @@ type Querier interface {
 	// compute recovery downtime ("recovered after 42m") for an 'up' alert.
 	LatestDownEventBefore(ctx context.Context, arg LatestDownEventBeforeParams) (Event, error)
 	ListAPIKeysByUser(ctx context.Context, userID pgtype.UUID) ([]ApiKey, error)
+	// Dashboard uptime bar (PING-013): last-N-days rollups for a batch of
+	// monitors in one query (avoids N+1 across a list page). Table is written by
+	// the nightly rollup job (PING-020, not yet built) — until then this always
+	// returns zero rows, which callers must treat as "no data yet", not an error.
+	ListDailyStatsByMonitorIDs(ctx context.Context, arg ListDailyStatsByMonitorIDsParams) ([]DailyStat, error)
 	// Per-monitor event feed (PING-010): ownership is checked in the handler, so
 	// this filters by monitor_id only (plus optional type + cursor). Uses
 	// idx_events_monitor (monitor_id, created_at DESC).
@@ -88,6 +93,12 @@ type Querier interface {
 	// isn't unique, so the composite key keeps page boundaries stable under
 	// concurrent inserts. sqlc.narg(cursor_created_at)/sqlc.narg(cursor_id) are
 	// both NULL on the first page (no WHERE filter applied).
+	//
+	// search/kind/display_state (PING-013) are all sqlc.narg: NULL means "no
+	// filter". display_state isn't a real column (it's derived from paused_at in
+	// store/monitor.go's toMonitor), so the filter clause replicates that
+	// derivation inline rather than comparing against the raw state column — a
+	// paused monitor must not surface under its frozen pre-pause state.
 	ListMonitorsByUserPage(ctx context.Context, arg ListMonitorsByUserPageParams) ([]Monitor, error)
 	// MarkAlertFailed terminally fails an alert (retries exhausted or a permanent
 	// delivery error). The alerter also writes an 'alert_failed' event in the same
