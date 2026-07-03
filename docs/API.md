@@ -89,3 +89,54 @@ Immutable timeline of everything that happened to a monitor: state transitions
 - `GET /api/v1/events` — global feed across all the caller's monitors. Filters:
   `?monitor=<id>`, `?type=<event-type>`. Pagination: `?cursor=`, `?limit=` (default 20, max 100).
 - `GET /api/v1/monitors/{id}/events` — one monitor's feed (owner-scoped). Filter: `?type=`.
+
+## Alerting (PING-011)
+
+Alerts are delivered through the `alert.Channel` abstraction (`backend/alert`).
+Email (SMTP) is the only implementation in v1; Slack/webhook channels slot in
+later without schema changes (PRD F3.6). The package is pure delivery — it
+renders templates and sends. Claiming outbox rows and scheduling retries is the
+alerter worker's job (PING-012).
+
+**Templates** (`alert.Render`), plain-text-first with a minimal DESIGN-tokened
+HTML variant. Subjects follow PRD F3.2:
+
+| Kind         | Subject example                                            |
+| ------------ | ---------------------------------------------------------- |
+| down         | `[DOWN] nightly-backup — missed check-in`                  |
+| up           | `[UP] nightly-backup — recovered after 42m`                |
+| tls_expiry   | `[TLS] api.example.com — certificate expires in 41 days`   |
+| reminder     | `[DOWN] nightly-backup — still down after 1d 2h`           |
+| test         | `[TEST] ping — SMTP delivery is working`                   |
+
+All dynamic values are HTML-escaped in the HTML body. Subjects are RFC 2047
+encoded (the em-dash is non-ASCII), so mail clients display them decoded.
+
+**SMTP transport.** Chosen by port: `465` uses implicit TLS (SMTPS); any other
+port (default `587`) uses STARTTLS when the server advertises it. Credentials
+(PLAIN auth) are sent only over an encrypted connection and are never logged.
+SMTP is optional — with `SMTP_HOST` unset the channel is disabled and the test
+endpoint reports that clearly rather than failing opaquely.
+
+**Retryable vs permanent errors** (`*alert.SendError`, `alert.IsRetryable`):
+SMTP `4xx` replies and network/TLS failures are *retryable* (the mail server
+may recover); `5xx` replies and any auth failure are *permanent* (the worker
+fails them fast instead of burning retry attempts).
+
+### `POST /api/v1/alerting/test`
+
+Sends a verification email to the **authenticated caller's own account email**
+(looked up server-side; no request body, so it can't be pointed at arbitrary
+addresses). Requires auth.
+
+- `200 {"delivered_to": "<caller email>"}` on success.
+- `503` when SMTP is not configured, or when the mail server was temporarily
+  unavailable (retryable).
+- `502` when the mail server permanently rejected the message (e.g. bad
+  credentials / relaying denied) — check SMTP settings.
+
+The client-facing message is always safe: internal SMTP error text and
+credentials never appear in the response or logs.
+
+For local development, `docker compose up mailpit` provides an SMTP sink at
+`localhost:1025` with a web UI at <http://localhost:8025>.

@@ -149,3 +149,51 @@ func TestLoad_InvalidRegistrationOpen(t *testing.T) {
 		t.Errorf("Load() error = %q, want it to name REGISTRATION_OPEN", err.Error())
 	}
 }
+
+func TestLoad_SMTPOptional(t *testing.T) {
+	// SMTP unset: loads fine, port defaults to 587, not Configured().
+	setEnv(t, validEnv())
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() unexpected error with SMTP unset: %v", err)
+	}
+	if cfg.SMTP.Port != 587 {
+		t.Errorf("default SMTP.Port = %d, want 587", cfg.SMTP.Port)
+	}
+	if cfg.SMTP.Configured() {
+		t.Error("SMTP.Configured() = true with no host, want false")
+	}
+
+	// SMTP set: values flow through and Configured() is true.
+	env := validEnv()
+	env["SMTP_HOST"] = "smtp.example.com"
+	env["SMTP_PORT"] = "465"
+	env["SMTP_USERNAME"] = "user"
+	env["SMTP_PASSWORD"] = "secret"
+	env["SMTP_FROM"] = "ping@example.com"
+	setEnv(t, env)
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load() unexpected error: %v", err)
+	}
+	if cfg.SMTP.Host != "smtp.example.com" || cfg.SMTP.Port != 465 || cfg.SMTP.From != "ping@example.com" {
+		t.Errorf("SMTP config not populated: %+v", cfg.SMTP)
+	}
+	if !cfg.SMTP.Configured() {
+		t.Error("SMTP.Configured() = false with host and from set, want true")
+	}
+}
+
+func TestLoad_InvalidSMTPPort(t *testing.T) {
+	env := validEnv()
+	env["SMTP_PORT"] = "not-a-port"
+	setEnv(t, env)
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load() expected error for non-integer SMTP_PORT, got nil")
+	}
+	if !strings.Contains(err.Error(), "SMTP_PORT") {
+		t.Errorf("Load() error = %q, want it to name SMTP_PORT", err.Error())
+	}
+}
