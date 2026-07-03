@@ -20,6 +20,7 @@ type Alert struct {
 	NextAttemptAt pgtype.Timestamptz `json:"next_attempt_at"`
 	SentAt        pgtype.Timestamptz `json:"sent_at"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	IsReminder    bool               `json:"is_reminder"`
 }
 
 type ApiKey struct {
@@ -62,32 +63,33 @@ type Event struct {
 }
 
 type Monitor struct {
-	ID            pgtype.UUID        `json:"id"`
-	UserID        pgtype.UUID        `json:"user_id"`
-	Kind          string             `json:"kind"`
-	Slug          string             `json:"slug"`
-	Name          string             `json:"name"`
-	ScheduleKind  pgtype.Text        `json:"schedule_kind"`
-	PeriodS       pgtype.Int4        `json:"period_s"`
-	CronExpr      pgtype.Text        `json:"cron_expr"`
-	Tz            string             `json:"tz"`
-	GraceS        pgtype.Int4        `json:"grace_s"`
-	Url           pgtype.Text        `json:"url"`
-	Method        pgtype.Text        `json:"method"`
-	IntervalS     pgtype.Int4        `json:"interval_s"`
-	TimeoutS      pgtype.Int4        `json:"timeout_s"`
-	FailThreshold pgtype.Int4        `json:"fail_threshold"`
-	HttpConfig    []byte             `json:"http_config"`
-	State         string             `json:"state"`
-	FailStreak    int32              `json:"fail_streak"`
-	LastCheckinAt pgtype.Timestamptz `json:"last_checkin_at"`
-	NextDeadline  pgtype.Timestamptz `json:"next_deadline"`
-	NextProbeAt   pgtype.Timestamptz `json:"next_probe_at"`
-	AlertsMuted   bool               `json:"alerts_muted"`
-	PausedAt      pgtype.Timestamptz `json:"paused_at"`
-	CreatedAt     pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
-	AutoResume    bool               `json:"auto_resume"`
+	ID             pgtype.UUID        `json:"id"`
+	UserID         pgtype.UUID        `json:"user_id"`
+	Kind           string             `json:"kind"`
+	Slug           string             `json:"slug"`
+	Name           string             `json:"name"`
+	ScheduleKind   pgtype.Text        `json:"schedule_kind"`
+	PeriodS        pgtype.Int4        `json:"period_s"`
+	CronExpr       pgtype.Text        `json:"cron_expr"`
+	Tz             string             `json:"tz"`
+	GraceS         pgtype.Int4        `json:"grace_s"`
+	Url            pgtype.Text        `json:"url"`
+	Method         pgtype.Text        `json:"method"`
+	IntervalS      pgtype.Int4        `json:"interval_s"`
+	TimeoutS       pgtype.Int4        `json:"timeout_s"`
+	FailThreshold  pgtype.Int4        `json:"fail_threshold"`
+	HttpConfig     []byte             `json:"http_config"`
+	State          string             `json:"state"`
+	FailStreak     int32              `json:"fail_streak"`
+	LastCheckinAt  pgtype.Timestamptz `json:"last_checkin_at"`
+	NextDeadline   pgtype.Timestamptz `json:"next_deadline"`
+	NextProbeAt    pgtype.Timestamptz `json:"next_probe_at"`
+	AlertsMuted    bool               `json:"alerts_muted"`
+	PausedAt       pgtype.Timestamptz `json:"paused_at"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+	AutoResume     bool               `json:"auto_resume"`
+	ReminderEveryS int32              `json:"reminder_every_s"`
 }
 
 type ProbeResult struct {

@@ -11,6 +11,14 @@ import (
 )
 
 type Querier interface {
+	// ClaimDueAlerts is the alerter worker's scan (PING-012): it claims pending
+	// outbox rows that are due, locking each so a second replica skips it, and joins
+	// everything one send needs — recipient, monitor identity/state/mute flag, and
+	// the triggering event — in a single round-trip. FOR UPDATE OF a locks only the
+	// alerts row (not the joined monitors/users/events), and SKIP LOCKED lets other
+	// workers claim different rows concurrently. Uses idx_alerts_pending
+	// (next_attempt_at) WHERE status = 'pending'.
+	ClaimDueAlerts(ctx context.Context, arg ClaimDueAlertsParams) ([]ClaimDueAlertsRow, error)
 	// Worker scan #1: scheduler claims heartbeat monitors past their deadline.
 	// Uses idx_monitors_due (next_deadline, partial WHERE state IN ('up','late') AND paused_at IS NULL).
 	// The evaluation clock is passed in (sqlc.arg(now)) rather than SQL now() so the
@@ -20,9 +28,6 @@ type Querier interface {
 	// Worker scan #2: prober claims http monitors due for their next probe.
 	// Uses idx_monitors_probe_due (next_probe_at, partial WHERE kind = 'http' AND paused_at IS NULL).
 	ClaimDueProbes(ctx context.Context, limit int32) ([]Monitor, error)
-	// Worker scan #3: alerter claims pending outbox rows ready for (re)send.
-	// Uses idx_alerts_pending (next_attempt_at, partial WHERE status = 'pending').
-	ClaimPendingAlerts(ctx context.Context, limit int32) ([]Alert, error)
 	CountUsers(ctx context.Context) (int64, error)
 	CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (ApiKey, error)
 	CreateMonitor(ctx context.Context, arg CreateMonitorParams) (Monitor, error)
@@ -32,6 +37,14 @@ type Querier interface {
 	// :execrows (not :exec) so the store layer can tell "deleted" apart from
 	// "no matching row" (foreign or already-deleted id) via RowsAffected.
 	DeleteMonitor(ctx context.Context, arg DeleteMonitorParams) (int64, error)
+	// EnqueueDownReminders inserts a fresh pending reminder alert for every monitor
+	// that is still down, not muted, and has an enabled reminder cadence whose most
+	// recent alert (down or prior reminder) is older than that cadence. It reuses
+	// the monitor's latest 'down' event as the alert's event_id so the reminder ties
+	// back to the outage. The NOT EXISTS guard prevents piling up duplicate pending
+	// reminders when the alerter is behind. Returns the inserted rows so the worker
+	// can log how many reminders it queued.
+	EnqueueDownReminders(ctx context.Context, now pgtype.Timestamptz) ([]Alert, error)
 	GetAPIKeyByHash(ctx context.Context, keyHash string) (ApiKey, error)
 	GetMonitorByID(ctx context.Context, id pgtype.UUID) (Monitor, error)
 	GetMonitorBySlug(ctx context.Context, slug string) (Monitor, error)
@@ -43,10 +56,11 @@ type Querier interface {
 	GetRefreshTokenByHash(ctx context.Context, tokenHash string) (RefreshToken, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id pgtype.UUID) (User, error)
-	// Outbox row for the alerter worker (PING-012). status defaults 'pending' and
-	// next_attempt_at defaults now(): the ingest fast path only enqueues, it never
-	// dispatches. channel is the sentinel 'default' until PING-012 introduces real
-	// notification channels and fans a transition out across them.
+	// Outbox row for an alerting transition (PING-009/011). status defaults
+	// 'pending' and next_attempt_at defaults now(): the ingest/scheduler fast paths
+	// only enqueue, they never dispatch. channel is the sentinel 'default' until a
+	// future ticket introduces real notification channels and fans a transition out
+	// across them.
 	InsertAlert(ctx context.Context, arg InsertAlertParams) (Alert, error)
 	// Ingest fast path (PING-008): every ping records exactly one checkin row.
 	// source_ip (INET) / user_agent / body are nullable; the store passes NULL
@@ -55,6 +69,10 @@ type Querier interface {
 	// Timeline events for a monitor (state transitions, config changes, etc.).
 	// meta defaults to an empty object when the caller passes NULL.
 	InsertEvent(ctx context.Context, arg InsertEventParams) (Event, error)
+	// LatestDownEventBefore finds the most recent 'down' event for a monitor at or
+	// before a given time — the start of the current outage. The alerter uses it to
+	// compute recovery downtime ("recovered after 42m") for an 'up' alert.
+	LatestDownEventBefore(ctx context.Context, arg LatestDownEventBeforeParams) (Event, error)
 	ListAPIKeysByUser(ctx context.Context, userID pgtype.UUID) ([]ApiKey, error)
 	// Per-monitor event feed (PING-010): ownership is checked in the handler, so
 	// this filters by monitor_id only (plus optional type + cursor). Uses
@@ -71,6 +89,13 @@ type Querier interface {
 	// concurrent inserts. sqlc.narg(cursor_created_at)/sqlc.narg(cursor_id) are
 	// both NULL on the first page (no WHERE filter applied).
 	ListMonitorsByUserPage(ctx context.Context, arg ListMonitorsByUserPageParams) ([]Monitor, error)
+	// MarkAlertFailed terminally fails an alert (retries exhausted or a permanent
+	// delivery error). The alerter also writes an 'alert_failed' event in the same
+	// transaction so the failure is visible on the monitor's timeline.
+	MarkAlertFailed(ctx context.Context, id int64) error
+	// MarkAlertSent finalizes a delivered alert. attempts is bumped so it reflects
+	// the total number of send tries including the successful one.
+	MarkAlertSent(ctx context.Context, id int64) error
 	// Scheduler late->down (PING-009): clear the deadline and bump the fail streak.
 	// paused_at untouched (see MarkMonitorLate).
 	MarkMonitorDown(ctx context.Context, id pgtype.UUID) error
@@ -84,6 +109,10 @@ type Querier interface {
 	// is a flag, not a state, per §2.3). RETURNING so the handler can echo the
 	// updated monitor. Zero rows affected (foreign/missing id) => ErrNotFound.
 	PauseMonitor(ctx context.Context, arg PauseMonitorParams) (Monitor, error)
+	// RescheduleAlert backs a failed-but-retryable alert off to a later attempt.
+	// attempts is bumped and next_attempt_at moved forward; the row stays 'pending'
+	// so the next due scan re-claims it.
+	RescheduleAlert(ctx context.Context, arg RescheduleAlertParams) error
 	// Resume (PING-010): a clean restart — clear the flag, set state='up', and
 	// re-arm next_deadline from the resume moment (computed by the caller via
 	// nextDeadlineFor; NULL for non-heartbeat / unscheduled). Re-arming from now is
@@ -98,6 +127,12 @@ type Querier interface {
 	// can no longer both succeed, since only one UPDATE can match the WHERE
 	// clause before rotated_at becomes non-null.
 	RotateRefreshTokenIfUnrotated(ctx context.Context, id pgtype.UUID) (RefreshToken, error)
+	// SuppressAlert resolves an alert that must not be delivered (monitor muted)
+	// without sending it. It reuses the terminal 'sent' status so the row leaves the
+	// pending outbox and is never retried; sent_at stays NULL to distinguish a
+	// suppressed alert from a delivered one. The transition/event was already
+	// recorded upstream, so no notification is owed.
+	SuppressAlert(ctx context.Context, id int64) error
 	TouchAPIKeyLastUsed(ctx context.Context, id pgtype.UUID) error
 	UnmuteMonitor(ctx context.Context, arg UnmuteMonitorParams) (Monitor, error)
 	// Partial update: sqlc.narg fields left NULL keep their current value via
