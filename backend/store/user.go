@@ -65,6 +65,24 @@ func (s *Store) Register(ctx context.Context, email, password string, registrati
 	return AuthUser{ID: u.ID.String(), Email: u.Email}, nil
 }
 
+// UserEmailByID returns the email address for a user id, or ErrNotFound if no
+// such user exists. Used by the alerting test endpoint to address the message
+// to the authenticated caller's own account.
+func (s *Store) UserEmailByID(ctx context.Context, userID string) (string, error) {
+	id, err := pgUUID(userID)
+	if err != nil {
+		return "", newHTTPError(ErrNotFound, http.StatusNotFound)
+	}
+	u, err := s.q.GetUserByID(ctx, id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", newHTTPError(ErrNotFound, http.StatusNotFound)
+		}
+		return "", fmt.Errorf("store: get user by id: %w", err)
+	}
+	return u.Email, nil
+}
+
 // Authenticate verifies email/password and returns the user on success, or
 // ErrInvalidCredentials if the email is unknown or the password is wrong.
 func (s *Store) Authenticate(ctx context.Context, email, password string) (AuthUser, error) {

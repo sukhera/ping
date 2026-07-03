@@ -18,6 +18,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/sukhera/ping/alert"
 	"github.com/sukhera/ping/internal/config"
 	"github.com/sukhera/ping/server"
 	"github.com/sukhera/ping/store"
@@ -82,6 +83,7 @@ func run(role string) error {
 			JWTRefreshTTL:    cfg.JWTRefreshTTL,
 			RegistrationOpen: cfg.RegistrationOpen,
 			CookieSecure:     cfg.Env == "production",
+			AlertChannel:     emailChannel(cfg.SMTP),
 		})
 
 		g.Go(func() error {
@@ -136,6 +138,23 @@ func loadRSAKeys(privPath, pubPath string) (*rsa.PrivateKey, *rsa.PublicKey, err
 	}
 
 	return priv, pub, nil
+}
+
+// emailChannel builds the SMTP alert channel from config, or nil when SMTP is
+// unconfigured. A nil channel makes the "send test email" endpoint report that
+// email delivery is not set up rather than failing opaquely.
+func emailChannel(smtp config.SMTPConfig) alert.Channel {
+	if !smtp.Configured() {
+		slog.Info("SMTP not configured; email alerts disabled until SMTP_HOST and SMTP_FROM are set")
+		return nil
+	}
+	return alert.NewEmailChannel(alert.EmailConfig{
+		Host:     smtp.Host,
+		Port:     smtp.Port,
+		Username: smtp.Username,
+		Password: smtp.Password,
+		From:     smtp.From,
+	})
 }
 
 func setupLogger(env string) {

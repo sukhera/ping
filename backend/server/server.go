@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/sukhera/ping/alert"
 	"github.com/sukhera/ping/store"
 )
 
@@ -39,6 +40,10 @@ type Deps struct {
 	// CookieSecure sets the refresh cookie's Secure attribute; true in
 	// production, false so cookies work over plain http in local dev.
 	CookieSecure bool
+
+	// AlertChannel delivers emails for the "send test email" endpoint. Nil
+	// when SMTP is unconfigured; the handler reports that clearly.
+	AlertChannel alert.Channel
 }
 
 func New(addr string, deps Deps) *http.Server {
@@ -80,6 +85,9 @@ func New(addr string, deps Deps) *http.Server {
 		r.Use(requireAuth(deps.JWTPublicKey))
 
 		r.Post("/api/v1/schedule/describe", mh.describeSchedule)
+
+		alh := newAlertingHandler(st, deps)
+		r.Post("/api/v1/alerting/test", alh.sendTest)
 
 		r.Get("/api/v1/events", mh.listEvents)
 

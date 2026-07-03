@@ -31,6 +31,16 @@ services:
       timeout: 5s
       retries: 10
 
+  # Local SMTP sink for alert-email development. SMTP on 1025, web UI on 8025.
+  # Point SMTP_HOST=localhost SMTP_PORT=1025 at it (see .env.example); it
+  # accepts everything and never forwards mail anywhere.
+  mailpit:
+    image: axllent/mailpit:v1.20
+    restart: unless-stopped
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+
 volumes:
   ping_postgres_data:
   ping_redis_data:

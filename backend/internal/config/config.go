@@ -22,6 +22,26 @@ type Config struct {
 	JWTAccessTTL      time.Duration
 	JWTRefreshTTL     time.Duration
 	RegistrationOpen  bool
+
+	SMTP SMTPConfig
+}
+
+// SMTPConfig holds outbound email settings. It is optional: a fresh install
+// boots without SMTP configured, and alert delivery / the "send test email"
+// endpoint report a clear "not configured" error until SMTP_HOST is set.
+type SMTPConfig struct {
+	Host     string
+	Port     int
+	Username string
+	Password string
+	From     string
+}
+
+// Configured reports whether enough SMTP settings are present to attempt a
+// send. Host and From are the minimum; auth is optional (some relays accept
+// unauthenticated submission from trusted networks).
+func (c SMTPConfig) Configured() bool {
+	return c.Host != "" && c.From != ""
 }
 
 // Load reads required configuration from the environment and validates it.
@@ -87,6 +107,17 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
+	// SMTP is optional. Port defaults to 587 (submission/STARTTLS) when unset
+	// or blank; only a non-integer value is an error.
+	cfg.SMTP.Host = os.Getenv("SMTP_HOST")
+	cfg.SMTP.Username = os.Getenv("SMTP_USERNAME")
+	cfg.SMTP.Password = os.Getenv("SMTP_PASSWORD")
+	cfg.SMTP.From = os.Getenv("SMTP_FROM")
+	cfg.SMTP.Port, err = optionalInt("SMTP_PORT", 587)
+	if err != nil {
+		return Config{}, err
+	}
+
 	return cfg, nil
 }
 
@@ -102,6 +133,20 @@ func requireInt(name string) (int, error) {
 	v, err := require(name)
 	if err != nil {
 		return 0, err
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, fmt.Errorf("config: environment variable %s must be an integer, got %q", name, v)
+	}
+	return n, nil
+}
+
+// optionalInt returns the integer value of an environment variable, or def if
+// it is unset or empty. A present-but-non-integer value is an error.
+func optionalInt(name string, def int) (int, error) {
+	v := os.Getenv(name)
+	if v == "" {
+		return def, nil
 	}
 	n, err := strconv.Atoi(v)
 	if err != nil {
