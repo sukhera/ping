@@ -433,14 +433,32 @@ WHERE user_id = $1
     $2::timestamptz IS NULL
     OR (created_at, id) < ($2::timestamptz, $3::uuid)
   )
+  AND (
+    $4::text IS NULL
+    OR name ILIKE '%' || $4::text || '%'
+    OR slug ILIKE '%' || $4::text || '%'
+  )
+  AND ($5::text IS NULL OR kind = $5::text)
+  AND (
+    $6::text IS NULL
+    OR ($6::text = 'paused' AND paused_at IS NOT NULL)
+    OR (
+      $6::text != 'paused'
+      AND paused_at IS NULL
+      AND state = $6::text
+    )
+  )
 ORDER BY created_at DESC, id DESC
-LIMIT $4
+LIMIT $7
 `
 
 type ListMonitorsByUserPageParams struct {
 	UserID          pgtype.UUID        `json:"user_id"`
 	CursorCreatedAt pgtype.Timestamptz `json:"cursor_created_at"`
 	CursorID        pgtype.UUID        `json:"cursor_id"`
+	Search          pgtype.Text        `json:"search"`
+	Kind            pgtype.Text        `json:"kind"`
+	DisplayState    pgtype.Text        `json:"display_state"`
 	PageLimit       int32              `json:"page_limit"`
 }
 
@@ -448,11 +466,20 @@ type ListMonitorsByUserPageParams struct {
 // isn't unique, so the composite key keeps page boundaries stable under
 // concurrent inserts. sqlc.narg(cursor_created_at)/sqlc.narg(cursor_id) are
 // both NULL on the first page (no WHERE filter applied).
+//
+// search/kind/display_state (PING-013) are all sqlc.narg: NULL means "no
+// filter". display_state isn't a real column (it's derived from paused_at in
+// store/monitor.go's toMonitor), so the filter clause replicates that
+// derivation inline rather than comparing against the raw state column — a
+// paused monitor must not surface under its frozen pre-pause state.
 func (q *Queries) ListMonitorsByUserPage(ctx context.Context, arg ListMonitorsByUserPageParams) ([]Monitor, error) {
 	rows, err := q.db.Query(ctx, listMonitorsByUserPage,
 		arg.UserID,
 		arg.CursorCreatedAt,
 		arg.CursorID,
+		arg.Search,
+		arg.Kind,
+		arg.DisplayState,
 		arg.PageLimit,
 	)
 	if err != nil {

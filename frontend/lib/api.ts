@@ -1,3 +1,5 @@
+import type { Monitor, MonitorListParams, MonitorListResponse } from "@/types/monitor";
+
 const BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
 
 // In-memory only — never persisted to localStorage/sessionStorage (XSS risk
@@ -137,4 +139,34 @@ export async function login(email: string, password: string): Promise<AuthRespon
 export async function logout(): Promise<void> {
   await rawFetch("/api/v1/auth/logout", { method: "POST" }).catch(() => {});
   setAccessToken(null);
+}
+
+export async function listMonitors(
+  params: MonitorListParams = {},
+  signal?: AbortSignal,
+): Promise<MonitorListResponse> {
+  const qs = new URLSearchParams();
+  if (params.q) qs.set("q", params.q);
+  if (params.kind) qs.set("kind", params.kind);
+  if (params.state) qs.set("state", params.state);
+  if (params.cursor) qs.set("cursor", params.cursor);
+  if (params.limit) qs.set("limit", String(params.limit));
+  const suffix = qs.toString() ? `?${qs}` : "";
+  return apiFetch<MonitorListResponse>(`/api/v1/monitors${suffix}`, {}, signal);
+}
+
+export async function pauseMonitor(id: string): Promise<Monitor> {
+  return apiFetch<Monitor>(`/api/v1/monitors/${id}/pause`, { method: "POST" });
+}
+
+export async function resumeMonitor(id: string): Promise<Monitor> {
+  return apiFetch<Monitor>(`/api/v1/monitors/${id}/resume`, { method: "POST" });
+}
+
+export async function muteMonitor(id: string): Promise<Monitor> {
+  return apiFetch<Monitor>(`/api/v1/monitors/${id}/mute`, { method: "POST" });
+}
+
+export async function unmuteMonitor(id: string): Promise<Monitor> {
+  return apiFetch<Monitor>(`/api/v1/monitors/${id}/unmute`, { method: "POST" });
 }

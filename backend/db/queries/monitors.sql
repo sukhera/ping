@@ -40,12 +40,33 @@ ORDER BY created_at DESC;
 -- isn't unique, so the composite key keeps page boundaries stable under
 -- concurrent inserts. sqlc.narg(cursor_created_at)/sqlc.narg(cursor_id) are
 -- both NULL on the first page (no WHERE filter applied).
+--
+-- search/kind/display_state (PING-013) are all sqlc.narg: NULL means "no
+-- filter". display_state isn't a real column (it's derived from paused_at in
+-- store/monitor.go's toMonitor), so the filter clause replicates that
+-- derivation inline rather than comparing against the raw state column — a
+-- paused monitor must not surface under its frozen pre-pause state.
 -- name: ListMonitorsByUserPage :many
 SELECT * FROM monitors
 WHERE user_id = sqlc.arg(user_id)
   AND (
     sqlc.narg(cursor_created_at)::timestamptz IS NULL
     OR (created_at, id) < (sqlc.narg(cursor_created_at)::timestamptz, sqlc.narg(cursor_id)::uuid)
+  )
+  AND (
+    sqlc.narg(search)::text IS NULL
+    OR name ILIKE '%' || sqlc.narg(search)::text || '%'
+    OR slug ILIKE '%' || sqlc.narg(search)::text || '%'
+  )
+  AND (sqlc.narg(kind)::text IS NULL OR kind = sqlc.narg(kind)::text)
+  AND (
+    sqlc.narg(display_state)::text IS NULL
+    OR (sqlc.narg(display_state)::text = 'paused' AND paused_at IS NOT NULL)
+    OR (
+      sqlc.narg(display_state)::text != 'paused'
+      AND paused_at IS NULL
+      AND state = sqlc.narg(display_state)::text
+    )
   )
 ORDER BY created_at DESC, id DESC
 LIMIT sqlc.arg(page_limit);

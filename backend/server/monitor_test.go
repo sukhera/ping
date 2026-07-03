@@ -17,7 +17,7 @@ import (
 type fakeMonitorStore struct {
 	createMonitorFn func(ctx context.Context, p store.CreateMonitorParams) (store.Monitor, error)
 	getMonitorFn    func(ctx context.Context, id, callerUserID string) (store.Monitor, error)
-	listMonitorsFn  func(ctx context.Context, userID, cursor string, limit int32) (store.MonitorPage, error)
+	listMonitorsFn  func(ctx context.Context, userID, cursor string, limit int32, filter store.ListMonitorsFilter) (store.MonitorPage, error)
 	updateMonitorFn func(ctx context.Context, id, callerUserID string, p store.UpdateMonitorParams) (store.Monitor, error)
 	deleteMonitorFn func(ctx context.Context, id, callerUserID string) error
 
@@ -27,6 +27,7 @@ type fakeMonitorStore struct {
 	unmuteMonitorFn       func(ctx context.Context, id, callerUserID string) (store.Monitor, error)
 	listEventsByUserFn    func(ctx context.Context, userID, monitorID, eventType, cursor string, limit int32) (store.EventPage, error)
 	listEventsByMonitorFn func(ctx context.Context, monitorID, eventType, cursor string, limit int32) (store.EventPage, error)
+	listDailyStatsFn      func(ctx context.Context, monitorIDs []string, since time.Time) (map[string][]store.DailyStat, error)
 }
 
 func (f *fakeMonitorStore) CreateMonitor(ctx context.Context, p store.CreateMonitorParams) (store.Monitor, error) {
@@ -35,8 +36,14 @@ func (f *fakeMonitorStore) CreateMonitor(ctx context.Context, p store.CreateMoni
 func (f *fakeMonitorStore) GetMonitor(ctx context.Context, id, callerUserID string) (store.Monitor, error) {
 	return f.getMonitorFn(ctx, id, callerUserID)
 }
-func (f *fakeMonitorStore) ListMonitors(ctx context.Context, userID, cursor string, limit int32) (store.MonitorPage, error) {
-	return f.listMonitorsFn(ctx, userID, cursor, limit)
+func (f *fakeMonitorStore) ListMonitors(ctx context.Context, userID, cursor string, limit int32, filter store.ListMonitorsFilter) (store.MonitorPage, error) {
+	return f.listMonitorsFn(ctx, userID, cursor, limit, filter)
+}
+func (f *fakeMonitorStore) ListDailyStats(ctx context.Context, monitorIDs []string, since time.Time) (map[string][]store.DailyStat, error) {
+	if f.listDailyStatsFn == nil {
+		return map[string][]store.DailyStat{}, nil
+	}
+	return f.listDailyStatsFn(ctx, monitorIDs, since)
 }
 func (f *fakeMonitorStore) UpdateMonitor(ctx context.Context, id, callerUserID string, p store.UpdateMonitorParams) (store.Monitor, error) {
 	return f.updateMonitorFn(ctx, id, callerUserID, p)

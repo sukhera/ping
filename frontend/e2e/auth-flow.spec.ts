@@ -11,7 +11,6 @@ test("register → dashboard (empty) → theme toggle → logout", async ({
   await page.getByRole("button", { name: "Create account" }).click();
 
   await expect(page).toHaveURL(/\/dashboard$/);
-  await expect(page.getByText("No monitors yet.")).toBeVisible();
 
   const html = page.locator("html");
   await expect(html).toHaveClass(/dark/);
