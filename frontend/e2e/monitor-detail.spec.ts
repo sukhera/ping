@@ -3,14 +3,13 @@ import type { APIRequestContext, Page } from "@playwright/test";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8080";
 
-// Auth endpoints are rate-limited per IP (5/min each for /register and
-// /login — backend/server/auth.go), and the existing suite (auth-flow.spec.ts
-// + dashboard.spec.ts) already uses the full register budget with no margin.
-// So this file registers exactly ONCE for all three tests below: they run
-// serially (test.describe.serial) sharing one `page`/session created in
-// beforeAll, instead of each getting its own fresh page (which would need
-// its own login to get a session, adding 3 more auth calls the suite's
-// budget doesn't have room for).
+// The per-IP auth rate limit (5/min, backend/server/auth.go) is disabled in
+// the e2e environment (PING_ENV=test → Deps.AuthRateLimitDisabled; see
+// docs/DEVELOPMENT.md "E2E auth rate limit"), so registrations are no longer
+// budget-constrained. We still register ONCE for all three tests below,
+// running serially (test.describe.serial) over one shared `page`/session from
+// beforeAll — it keeps the spec fast and avoids 3 redundant fresh-session
+// logins, not because the budget requires it.
 test.describe.serial("monitor detail", () => {
   let page: Page;
   let accessToken: string;
