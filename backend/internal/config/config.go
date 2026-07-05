@@ -32,6 +32,11 @@ type Config struct {
 	// block, for self-hosters genuinely monitoring internal targets. Empty
 	// means the guard is fully enforced.
 	SSRFAllowlist []netip.Prefix
+
+	// RetentionDays is how long raw checkins/probe_results/events are kept
+	// before the rollup worker prunes them (PRD F6.4, PING-020). daily_stats
+	// rollups are kept indefinitely regardless of this setting.
+	RetentionDays int
 }
 
 // SMTPConfig holds outbound email settings. It is optional: a fresh install
@@ -127,6 +132,11 @@ func Load() (Config, error) {
 	}
 
 	cfg.SSRFAllowlist, err = parseAllowlist(os.Getenv("SSRF_ALLOWLIST"))
+	if err != nil {
+		return Config{}, err
+	}
+
+	cfg.RetentionDays, err = optionalInt("RETENTION_DAYS", 90)
 	if err != nil {
 		return Config{}, err
 	}

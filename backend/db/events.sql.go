@@ -11,6 +11,38 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const deleteOldEventsBatch = `-- name: DeleteOldEventsBatch :execrows
+DELETE FROM events
+WHERE id IN (
+    SELECT e.id FROM events e
+    WHERE e.created_at < $1::timestamptz
+      AND NOT EXISTS (
+          SELECT 1 FROM alerts a WHERE a.event_id = e.id AND a.status = 'pending'
+      )
+    LIMIT $2
+)
+`
+
+type DeleteOldEventsBatchParams struct {
+	Cutoff     pgtype.Timestamptz `json:"cutoff"`
+	BatchLimit int32              `json:"batch_limit"`
+}
+
+// DeleteOldEventsBatch (PING-020 retention): same batched-delete shape as
+// DeleteOldCheckinsBatch, with one addition — an event with a still-pending
+// outbox alert (alerts.event_id FK ON DELETE CASCADE) is never selected,
+// even past the cutoff, so pruning can never silently drop an alert the
+// alerter hasn't dispatched yet. In steady state this excludes nothing (an
+// alert is sent/failed within minutes), but it removes any dependency on
+// that timing holding at the 90-day retention boundary.
+func (q *Queries) DeleteOldEventsBatch(ctx context.Context, arg DeleteOldEventsBatchParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteOldEventsBatch, arg.Cutoff, arg.BatchLimit)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const insertEvent = `-- name: InsertEvent :one
 INSERT INTO events (monitor_id, type, message, meta)
 VALUES ($1, $2, $3, COALESCE($4::jsonb, '{}'::jsonb))

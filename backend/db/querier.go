@@ -42,6 +42,26 @@ type Querier interface {
 	// :execrows (not :exec) so the store layer can tell "deleted" apart from
 	// "no matching row" (foreign or already-deleted id) via RowsAffected.
 	DeleteMonitor(ctx context.Context, arg DeleteMonitorParams) (int64, error)
+	// DeleteOldCheckinsBatch (PING-020 retention): deletes up to batch_limit rows
+	// older than the cutoff, chosen via a subquery LIMIT rather than a bare
+	// DELETE ... WHERE created_at < cutoff so one call never locks more than
+	// batch_limit rows — the caller (store) loops this until it deletes fewer
+	// than batch_limit rows, keeping each individual statement's lock short-lived
+	// on a table that ingest is concurrently writing to. daily_stats has already
+	// captured this data by the time it's pruned, so no aggregate is lost.
+	DeleteOldCheckinsBatch(ctx context.Context, arg DeleteOldCheckinsBatchParams) (int64, error)
+	// DeleteOldEventsBatch (PING-020 retention): same batched-delete shape as
+	// DeleteOldCheckinsBatch, with one addition — an event with a still-pending
+	// outbox alert (alerts.event_id FK ON DELETE CASCADE) is never selected,
+	// even past the cutoff, so pruning can never silently drop an alert the
+	// alerter hasn't dispatched yet. In steady state this excludes nothing (an
+	// alert is sent/failed within minutes), but it removes any dependency on
+	// that timing holding at the 90-day retention boundary.
+	DeleteOldEventsBatch(ctx context.Context, arg DeleteOldEventsBatchParams) (int64, error)
+	// DeleteOldProbeResultsBatch (PING-020 retention): same batched-delete shape
+	// as DeleteOldCheckinsBatch — see that query's comment for why the subquery
+	// LIMIT matters.
+	DeleteOldProbeResultsBatch(ctx context.Context, arg DeleteOldProbeResultsBatchParams) (int64, error)
 	// EnqueueDownReminders inserts a fresh pending reminder alert for every monitor
 	// that is still down, not muted, and has an enabled reminder cadence whose most
 	// recent alert (down or prior reminder) is older than that cadence. It reuses
@@ -99,8 +119,7 @@ type Querier interface {
 	ListCheckinsByMonitorPage(ctx context.Context, arg ListCheckinsByMonitorPageParams) ([]Checkin, error)
 	// Dashboard uptime bar (PING-013): last-N-days rollups for a batch of
 	// monitors in one query (avoids N+1 across a list page). Table is written by
-	// the nightly rollup job (PING-020, not yet built) — until then this always
-	// returns zero rows, which callers must treat as "no data yet", not an error.
+	// the nightly rollup job (PING-020).
 	ListDailyStatsByMonitorIDs(ctx context.Context, arg ListDailyStatsByMonitorIDsParams) ([]DailyStat, error)
 	// Per-monitor event feed (PING-010): ownership is checked in the handler, so
 	// this filters by monitor_id only (plus optional type + cursor). Uses
@@ -162,6 +181,39 @@ type Querier interface {
 	ResumeMonitor(ctx context.Context, arg ResumeMonitorParams) (Monitor, error)
 	RevokeAPIKey(ctx context.Context, arg RevokeAPIKeyParams) (int64, error)
 	RevokeRefreshTokenFamily(ctx context.Context, familyID pgtype.UUID) error
+	// RollupCheckinCounts (PING-020): per-monitor checkin/failure counts for one
+	// UTC day, from raw heartbeat checkins. Only monitors with at least one
+	// checkin that day appear — the rollup job upserts these and leaves monitors
+	// with zero heartbeat activity untouched (an HTTP monitor never has rows
+	// here; a heartbeat monitor with no pings that day gets no row either, same
+	// as today's "absent means no data" convention).
+	RollupCheckinCounts(ctx context.Context, arg RollupCheckinCountsParams) ([]RollupCheckinCountsRow, error)
+	// RollupDowntimeSeconds (PING-020): per-monitor downtime seconds overlapping
+	// one UTC day, computed from down/up transition events rather than raw
+	// checkins/probes — downtime is a state duration, not something a row count
+	// can capture. For every 'down' event, LEAD() finds the next event of either
+	// kind on that monitor; if it's an 'up', that closes the outage, otherwise
+	// (no later event yet — still down, or the next event is unrelated) the
+	// outage is treated as open through day_end, matching "still down" reminders
+	// counting as ongoing downtime for the day's rollup. Each outage's
+	// [down_at, resolved_at) is clamped to [day_start, day_end) via
+	// LEAST/GREATEST before summing, which is what makes downtime split
+	// correctly across a day boundary (AC-2): an outage spanning midnight
+	// contributes its pre-midnight seconds to day N and its post-midnight
+	// seconds to day N+1 when this query is run once per day.
+	RollupDowntimeSeconds(ctx context.Context, arg RollupDowntimeSecondsParams) ([]RollupDowntimeSecondsRow, error)
+	// RollupProbeStats (PING-020): per-monitor probe counts + latency percentiles
+	// for one UTC day, from raw HTTP probe results. "Failures" counts probes with
+	// ok = false; latency percentiles are computed over successful probes only
+	// (a failed probe has no meaningful latency signal), matching
+	// LatencySeriesByMonitor's convention. A monitor with probes but zero
+	// successes yields NULL percentiles (the LEFT JOIN's right side has no row),
+	// which the rollup job stores as NULL — percentiles are computed in the
+	// "successes" CTE via a WHERE filter, not a FILTER clause, because sqlc
+	// cannot infer PERCENTILE_CONT ... FILTER(...) as nullable and would
+	// generate a non-nullable int32 that panics on Scan the first time a
+	// monitor's day has zero successful probes.
+	RollupProbeStats(ctx context.Context, arg RollupProbeStatsParams) ([]RollupProbeStatsRow, error)
 	// Atomically marks a token rotated only if it hasn't already been rotated or
 	// revoked, closing the check-then-write race between GetRefreshTokenByHash
 	// and the rotation write: two concurrent requests replaying the same token
@@ -203,6 +255,12 @@ type Querier interface {
 	// always re-armed to now + interval_s (computed by the caller) regardless of
 	// outcome, so a failing target keeps being probed on its normal cadence.
 	UpdateMonitorOnProbe(ctx context.Context, arg UpdateMonitorOnProbeParams) error
+	// UpsertDailyStat (PING-020): the rollup job's write path. ON CONFLICT DO
+	// UPDATE makes a re-run for the same (monitor_id, day) replace rather than
+	// double-count, satisfying the "rollup is idempotent" AC. latency_p50/p95 are
+	// nullable (an all-heartbeat day, or an HTTP day with zero successful
+	// probes, has no latency signal).
+	UpsertDailyStat(ctx context.Context, arg UpsertDailyStatParams) error
 }
 
 var _ Querier = (*Queries)(nil)

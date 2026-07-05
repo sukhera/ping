@@ -31,3 +31,21 @@ WHERE monitor_id = sqlc.arg(monitor_id)
   AND (sqlc.narg(cursor_id)::bigint IS NULL OR id < sqlc.narg(cursor_id)::bigint)
 ORDER BY id DESC
 LIMIT sqlc.arg(page_limit);
+
+-- DeleteOldEventsBatch (PING-020 retention): same batched-delete shape as
+-- DeleteOldCheckinsBatch, with one addition — an event with a still-pending
+-- outbox alert (alerts.event_id FK ON DELETE CASCADE) is never selected,
+-- even past the cutoff, so pruning can never silently drop an alert the
+-- alerter hasn't dispatched yet. In steady state this excludes nothing (an
+-- alert is sent/failed within minutes), but it removes any dependency on
+-- that timing holding at the 90-day retention boundary.
+-- name: DeleteOldEventsBatch :execrows
+DELETE FROM events
+WHERE id IN (
+    SELECT e.id FROM events e
+    WHERE e.created_at < sqlc.arg(cutoff)::timestamptz
+      AND NOT EXISTS (
+          SELECT 1 FROM alerts a WHERE a.event_id = e.id AND a.status = 'pending'
+      )
+    LIMIT sqlc.arg(batch_limit)
+);

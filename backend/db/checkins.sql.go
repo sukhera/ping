@@ -12,6 +12,35 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const deleteOldCheckinsBatch = `-- name: DeleteOldCheckinsBatch :execrows
+DELETE FROM checkins
+WHERE id IN (
+    SELECT id FROM checkins
+    WHERE created_at < $1::timestamptz
+    LIMIT $2
+)
+`
+
+type DeleteOldCheckinsBatchParams struct {
+	Cutoff     pgtype.Timestamptz `json:"cutoff"`
+	BatchLimit int32              `json:"batch_limit"`
+}
+
+// DeleteOldCheckinsBatch (PING-020 retention): deletes up to batch_limit rows
+// older than the cutoff, chosen via a subquery LIMIT rather than a bare
+// DELETE ... WHERE created_at < cutoff so one call never locks more than
+// batch_limit rows — the caller (store) loops this until it deletes fewer
+// than batch_limit rows, keeping each individual statement's lock short-lived
+// on a table that ingest is concurrently writing to. daily_stats has already
+// captured this data by the time it's pruned, so no aggregate is lost.
+func (q *Queries) DeleteOldCheckinsBatch(ctx context.Context, arg DeleteOldCheckinsBatchParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteOldCheckinsBatch, arg.Cutoff, arg.BatchLimit)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const insertCheckin = `-- name: InsertCheckin :one
 INSERT INTO checkins (monitor_id, kind, source_ip, user_agent, body)
 VALUES ($1, $2, $3, $4, $5)

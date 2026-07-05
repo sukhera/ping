@@ -25,6 +25,7 @@ import (
 	"github.com/sukhera/ping/worker"
 	"github.com/sukhera/ping/worker/alerter"
 	"github.com/sukhera/ping/worker/prober"
+	"github.com/sukhera/ping/worker/rollup"
 	"github.com/sukhera/ping/worker/scheduler"
 )
 
@@ -117,6 +118,9 @@ func run(role string) error {
 		})
 		g.Go(func() error {
 			return prober.Run(ctx, st, hb, prober.DefaultInterval, cfg.SSRFAllowlist)
+		})
+		g.Go(func() error {
+			return rollup.Run(ctx, st, hb, rollup.DefaultInterval, cfg.RetentionDays)
 		})
 	}
 

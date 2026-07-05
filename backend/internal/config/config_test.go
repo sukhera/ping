@@ -197,3 +197,41 @@ func TestLoad_InvalidSMTPPort(t *testing.T) {
 		t.Errorf("Load() error = %q, want it to name SMTP_PORT", err.Error())
 	}
 }
+
+func TestLoad_RetentionDaysOptional(t *testing.T) {
+	// Unset: defaults to 90 (PRD F6.4).
+	setEnv(t, validEnv())
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() unexpected error with RETENTION_DAYS unset: %v", err)
+	}
+	if cfg.RetentionDays != 90 {
+		t.Errorf("default RetentionDays = %d, want 90", cfg.RetentionDays)
+	}
+
+	// Set: value flows through.
+	env := validEnv()
+	env["RETENTION_DAYS"] = "30"
+	setEnv(t, env)
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load() unexpected error: %v", err)
+	}
+	if cfg.RetentionDays != 30 {
+		t.Errorf("RetentionDays = %d, want 30", cfg.RetentionDays)
+	}
+}
+
+func TestLoad_InvalidRetentionDays(t *testing.T) {
+	env := validEnv()
+	env["RETENTION_DAYS"] = "not-a-number"
+	setEnv(t, env)
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load() expected error for non-integer RETENTION_DAYS, got nil")
+	}
+	if !strings.Contains(err.Error(), "RETENTION_DAYS") {
+		t.Errorf("Load() error = %q, want it to name RETENTION_DAYS", err.Error())
+	}
+}

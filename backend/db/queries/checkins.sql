@@ -18,3 +18,18 @@ WHERE monitor_id = sqlc.arg(monitor_id)
   AND (sqlc.narg(cursor_id)::bigint IS NULL OR id < sqlc.narg(cursor_id)::bigint)
 ORDER BY id DESC
 LIMIT sqlc.arg(page_limit);
+
+-- DeleteOldCheckinsBatch (PING-020 retention): deletes up to batch_limit rows
+-- older than the cutoff, chosen via a subquery LIMIT rather than a bare
+-- DELETE ... WHERE created_at < cutoff so one call never locks more than
+-- batch_limit rows — the caller (store) loops this until it deletes fewer
+-- than batch_limit rows, keeping each individual statement's lock short-lived
+-- on a table that ingest is concurrently writing to. daily_stats has already
+-- captured this data by the time it's pruned, so no aggregate is lost.
+-- name: DeleteOldCheckinsBatch :execrows
+DELETE FROM checkins
+WHERE id IN (
+    SELECT id FROM checkins
+    WHERE created_at < sqlc.arg(cutoff)::timestamptz
+    LIMIT sqlc.arg(batch_limit)
+);

@@ -11,6 +11,31 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const deleteOldProbeResultsBatch = `-- name: DeleteOldProbeResultsBatch :execrows
+DELETE FROM probe_results
+WHERE id IN (
+    SELECT id FROM probe_results
+    WHERE created_at < $1::timestamptz
+    LIMIT $2
+)
+`
+
+type DeleteOldProbeResultsBatchParams struct {
+	Cutoff     pgtype.Timestamptz `json:"cutoff"`
+	BatchLimit int32              `json:"batch_limit"`
+}
+
+// DeleteOldProbeResultsBatch (PING-020 retention): same batched-delete shape
+// as DeleteOldCheckinsBatch — see that query's comment for why the subquery
+// LIMIT matters.
+func (q *Queries) DeleteOldProbeResultsBatch(ctx context.Context, arg DeleteOldProbeResultsBatchParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteOldProbeResultsBatch, arg.Cutoff, arg.BatchLimit)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const insertProbeResult = `-- name: InsertProbeResult :one
 INSERT INTO probe_results (monitor_id, ok, http_status, latency_ms, error, tls_expires_at)
 VALUES ($1, $2, $3, $4, $5, $6)
