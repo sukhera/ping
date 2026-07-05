@@ -1,4 +1,4 @@
-import type { Monitor, UpdateMonitorRequest } from "@/types/monitor";
+import type { HTTPConfig, Monitor, UpdateMonitorRequest } from "@/types/monitor";
 
 // Maps each UpdateMonitorRequest key to how it reads off a Monitor, so the
 // comparison is spelled out once instead of relying on same-named keys.
@@ -20,14 +20,31 @@ const MONITOR_FIELD: {
   http_config: (m) => m.http_config,
 };
 
-function valuesEqual(a: unknown, b: unknown): boolean {
-  if (a === b) return true;
-  // http_config (and its nested headers) is the only object-valued field;
-  // everything else is a primitive already caught by ===.
-  if (typeof a === "object" || typeof b === "object") {
-    return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+// The server stores http_config as whatever JSON was last sent — an
+// as-yet-untouched HTTP monitor has {} (see backend/store: an absent
+// http_config on create still round-trips as {}), not the form's own
+// defaults (keyword_negate: false, follow_redirects: true, etc). Comparing
+// the two objects structurally (rather than isEqual/stringify on the raw
+// values) means "the form's reconstructed object happens to spell out
+// defaults the stored blob left implicit" is correctly treated as no change.
+function normalizeHTTPConfig(cfg: HTTPConfig | undefined) {
+  return {
+    headers: cfg?.headers && Object.keys(cfg.headers).length > 0 ? cfg.headers : undefined,
+    keyword: cfg?.keyword || undefined,
+    keyword_negate: cfg?.keyword_negate ?? false,
+    follow_redirects: cfg?.follow_redirects ?? true,
+  };
+}
+
+function httpConfigEqual(a: HTTPConfig | undefined, b: HTTPConfig | undefined): boolean {
+  return JSON.stringify(normalizeHTTPConfig(a)) === JSON.stringify(normalizeHTTPConfig(b));
+}
+
+function valuesEqual(key: keyof UpdateMonitorRequest, a: unknown, b: unknown): boolean {
+  if (key === "http_config") {
+    return httpConfigEqual(a as HTTPConfig | undefined, b as HTTPConfig | undefined);
   }
-  return false;
+  return a === b;
 }
 
 /**
@@ -54,7 +71,7 @@ export function diffMonitorUpdate(
     if (!(key in body)) continue;
     const next = body[key];
     const current = MONITOR_FIELD[key]?.(monitor);
-    if (!valuesEqual(next, current)) {
+    if (!valuesEqual(key, next, current)) {
       (diff[key] as unknown) = next;
     }
   }
