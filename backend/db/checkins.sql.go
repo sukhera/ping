@@ -49,3 +49,51 @@ func (q *Queries) InsertCheckin(ctx context.Context, arg InsertCheckinParams) (C
 	)
 	return i, err
 }
+
+const listCheckinsByMonitorPage = `-- name: ListCheckinsByMonitorPage :many
+SELECT id, monitor_id, kind, source_ip, user_agent, body, created_at
+FROM checkins
+WHERE monitor_id = $1
+  AND ($2::bigint IS NULL OR id < $2::bigint)
+ORDER BY id DESC
+LIMIT $3
+`
+
+type ListCheckinsByMonitorPageParams struct {
+	MonitorID pgtype.UUID `json:"monitor_id"`
+	CursorID  pgtype.Int8 `json:"cursor_id"`
+	PageLimit int32       `json:"page_limit"`
+}
+
+// Check-in log (PING-014): one monitor's check-ins, newest first. Ownership
+// is checked in the handler, so this filters by monitor_id only (plus an
+// optional cursor). Uses idx_checkins_monitor (monitor_id, created_at DESC).
+// Cursor is the BIGSERIAL id (monotonic), so id < cursor paginates strictly,
+// matching ListEventsByMonitorPage's convention.
+func (q *Queries) ListCheckinsByMonitorPage(ctx context.Context, arg ListCheckinsByMonitorPageParams) ([]Checkin, error) {
+	rows, err := q.db.Query(ctx, listCheckinsByMonitorPage, arg.MonitorID, arg.CursorID, arg.PageLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Checkin{}
+	for rows.Next() {
+		var i Checkin
+		if err := rows.Scan(
+			&i.ID,
+			&i.MonitorID,
+			&i.Kind,
+			&i.SourceIp,
+			&i.UserAgent,
+			&i.Body,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

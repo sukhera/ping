@@ -1,4 +1,12 @@
-import type { Monitor, MonitorListParams, MonitorListResponse } from "@/types/monitor";
+import type {
+  CheckinListParams,
+  CheckinListResponse,
+  EventListParams,
+  EventListResponse,
+  Monitor,
+  MonitorListParams,
+  MonitorListResponse,
+} from "@/types/monitor";
 
 const BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
 
@@ -153,6 +161,35 @@ export async function listMonitors(
   if (params.limit) qs.set("limit", String(params.limit));
   const suffix = qs.toString() ? `?${qs}` : "";
   return apiFetch<MonitorListResponse>(`/api/v1/monitors${suffix}`, {}, signal);
+}
+
+export async function getMonitor(id: string, signal?: AbortSignal): Promise<Monitor> {
+  return apiFetch<Monitor>(`/api/v1/monitors/${id}`, {}, signal);
+}
+
+export async function listMonitorCheckins(
+  id: string,
+  params: CheckinListParams = {},
+  signal?: AbortSignal,
+): Promise<CheckinListResponse> {
+  const qs = new URLSearchParams();
+  if (params.cursor) qs.set("cursor", params.cursor);
+  if (params.limit) qs.set("limit", String(params.limit));
+  const suffix = qs.toString() ? `?${qs}` : "";
+  return apiFetch<CheckinListResponse>(`/api/v1/monitors/${id}/checkins${suffix}`, {}, signal);
+}
+
+export async function listMonitorEvents(
+  id: string,
+  params: EventListParams = {},
+  signal?: AbortSignal,
+): Promise<EventListResponse> {
+  const qs = new URLSearchParams();
+  if (params.type) qs.set("type", params.type);
+  if (params.cursor) qs.set("cursor", params.cursor);
+  if (params.limit) qs.set("limit", String(params.limit));
+  const suffix = qs.toString() ? `?${qs}` : "";
+  return apiFetch<EventListResponse>(`/api/v1/monitors/${id}/events${suffix}`, {}, signal);
 }
 
 export async function pauseMonitor(id: string): Promise<Monitor> {

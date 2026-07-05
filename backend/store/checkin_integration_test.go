@@ -290,3 +290,73 @@ func TestRecordCheckin_BodyStoredVerbatimUpToCap(t *testing.T) {
 		t.Errorf("stored body length = %d, want %d", len(stored), len(body))
 	}
 }
+
+// PING-014 check-in log: raw HTML/script bodies must round-trip verbatim
+// (untouched by the store) — inertness is the frontend's job (React's default
+// escaping), not the database's.
+func TestListCheckinsByMonitor_BodyRoundTripsVerbatim(t *testing.T) {
+	e := newCheckinTestEnv(t)
+	ctx := context.Background()
+	m := e.seedMonitor(t, "up")
+
+	xssBody := `<script>alert("xss")</script>`
+	if _, err := e.store.RecordCheckin(ctx, RecordCheckinParams{
+		Slug: m.Slug, Kind: CheckinSuccess, SourceIP: "203.0.113.9", UserAgent: "curl/8.0", Body: xssBody, Now: time.Now(),
+	}); err != nil {
+		t.Fatalf("RecordCheckin: %v", err)
+	}
+
+	page, err := e.store.ListCheckinsByMonitor(ctx, m.ID.String(), "", 10)
+	if err != nil {
+		t.Fatalf("ListCheckinsByMonitor: %v", err)
+	}
+	if len(page.Checkins) != 1 {
+		t.Fatalf("checkins = %d, want 1", len(page.Checkins))
+	}
+	c := page.Checkins[0]
+	if c.Body == nil || *c.Body != xssBody {
+		t.Errorf("body = %v, want %q verbatim", c.Body, xssBody)
+	}
+	if c.SourceIP == nil || *c.SourceIP != "203.0.113.9" {
+		t.Errorf("source_ip = %v, want 203.0.113.9", c.SourceIP)
+	}
+	if c.UserAgent == nil || *c.UserAgent != "curl/8.0" {
+		t.Errorf("user_agent = %v, want curl/8.0", c.UserAgent)
+	}
+	if c.Kind != "success" {
+		t.Errorf("kind = %q, want success", c.Kind)
+	}
+}
+
+func TestListCheckinsByMonitor_CursorPaginatesNewestFirst(t *testing.T) {
+	e := newCheckinTestEnv(t)
+	ctx := context.Background()
+	m := e.seedMonitor(t, "up")
+
+	for i := 0; i < 6; i++ {
+		if _, err := e.store.RecordCheckin(ctx, RecordCheckinParams{
+			Slug: m.Slug, Kind: CheckinSuccess, Now: time.Now(),
+		}); err != nil {
+			t.Fatalf("RecordCheckin[%d]: %v", i, err)
+		}
+	}
+
+	page1, err := e.store.ListCheckinsByMonitor(ctx, m.ID.String(), "", 4)
+	if err != nil {
+		t.Fatalf("page1: %v", err)
+	}
+	if len(page1.Checkins) != 4 || page1.NextCursor == "" {
+		t.Fatalf("page1 = %d checkins, cursor=%q; want 4 + cursor", len(page1.Checkins), page1.NextCursor)
+	}
+
+	page2, err := e.store.ListCheckinsByMonitor(ctx, m.ID.String(), page1.NextCursor, 4)
+	if err != nil {
+		t.Fatalf("page2: %v", err)
+	}
+	if len(page2.Checkins) != 2 || page2.NextCursor != "" {
+		t.Errorf("page2 = %d checkins, cursor=%q; want 2 + no cursor", len(page2.Checkins), page2.NextCursor)
+	}
+	if len(page2.Checkins) > 0 && page2.Checkins[0].ID >= page1.Checkins[len(page1.Checkins)-1].ID {
+		t.Error("pages overlap; cursor pagination not strict")
+	}
+}

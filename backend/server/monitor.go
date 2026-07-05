@@ -50,6 +50,8 @@ type monitorStore interface {
 
 	ListEventsByUser(ctx context.Context, userID, monitorID, eventType, cursor string, limit int32) (store.EventPage, error)
 	ListEventsByMonitor(ctx context.Context, monitorID, eventType, cursor string, limit int32) (store.EventPage, error)
+
+	ListCheckinsByMonitor(ctx context.Context, monitorID, cursor string, limit int32) (store.CheckinPage, error)
 }
 
 type monitorHandler struct {
@@ -235,6 +237,9 @@ func (h *monitorHandler) create(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, toMonitorResponse(m, h.deps.BaseURL))
 }
 
+// get returns one monitor, including its daily_stats (PING-014 detail page
+// needs the 90-day window for its uptime bar and 7/30/90d uptime %, the same
+// data list already attaches per row for the dashboard's uptime bar).
 func (h *monitorHandler) get(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	m, err := h.store.GetMonitor(r.Context(), id, userIDFromContext(r.Context()))
@@ -242,7 +247,25 @@ func (h *monitorHandler) get(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toMonitorResponse(m, h.deps.BaseURL))
+
+	resp := toMonitorResponse(m, h.deps.BaseURL)
+
+	since := time.Now().AddDate(0, 0, -(dailyStatsWindowDays - 1))
+	statsByMonitor, err := h.store.ListDailyStats(r.Context(), []string{m.ID}, since)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	for _, ds := range statsByMonitor[m.ID] {
+		resp.DailyStats = append(resp.DailyStats, dailyStatResponse{
+			Day:       ds.Day.Format("2006-01-02"),
+			Checkins:  ds.Checkins,
+			Failures:  ds.Failures,
+			DowntimeS: ds.DowntimeS,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, resp)
 }
 
 type monitorListResponse struct {

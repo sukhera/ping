@@ -149,6 +149,14 @@ func (h *authHandler) logout(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *authHandler) checkRateLimit(w http.ResponseWriter, r *http.Request, key string) bool {
+	// e2e-only escape hatch: the Playwright suite shares one IP across workers
+	// and would otherwise exhaust the 5/min per-IP budget. Gated on
+	// PING_ENV=test (see Deps.AuthRateLimitDisabled) so it can never weaken a
+	// dev or production deployment.
+	if h.deps.AuthRateLimitDisabled {
+		return true
+	}
+
 	allowed, retryAfter, err := h.store.Allow(r.Context(), key, authRateLimit, authRateWindow)
 	if err != nil {
 		slog.WarnContext(r.Context(), "rate limit check failed, allowing request",

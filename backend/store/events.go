@@ -158,7 +158,7 @@ func (s *Store) ListEventsByUser(ctx context.Context, userID, monitorID, eventTy
 		return EventPage{}, nil
 	}
 
-	cursorID, err := decodeEventCursor(cursor)
+	cursorID, err := decodeIDCursor(cursor)
 	if err != nil {
 		return EventPage{}, newHTTPError(fmt.Errorf("invalid cursor"), http.StatusBadRequest)
 	}
@@ -184,7 +184,7 @@ func (s *Store) ListEventsByMonitor(ctx context.Context, monitorID, eventType, c
 		return EventPage{}, newHTTPError(ErrNotFound, http.StatusNotFound)
 	}
 
-	cursorID, err := decodeEventCursor(cursor)
+	cursorID, err := decodeIDCursor(cursor)
 	if err != nil {
 		return EventPage{}, newHTTPError(fmt.Errorf("invalid cursor"), http.StatusBadRequest)
 	}
@@ -243,20 +243,21 @@ func toEventPage(rows []db.Event, limit int32) EventPage {
 		}
 	}
 	if len(rows) == int(limit) {
-		page.NextCursor = encodeEventCursor(rows[len(rows)-1].ID)
+		page.NextCursor = encodeIDCursor(rows[len(rows)-1].ID)
 	}
 	return page
 }
 
-// encodeEventCursor opaque-encodes an event id for pagination. Events use a
-// monotonic BIGSERIAL id, so a single id is a strict, stable cursor.
-func encodeEventCursor(id int64) string {
+// encodeIDCursor opaque-encodes a BIGSERIAL id for pagination. Shared by
+// every feed keyed on a monotonic bigint id (events, checkins) — a single id
+// is a strict, stable cursor for all of them.
+func encodeIDCursor(id int64) string {
 	return base64.RawURLEncoding.EncodeToString([]byte(strconv.FormatInt(id, 10)))
 }
 
-// decodeEventCursor decodes a cursor from encodeEventCursor. An empty cursor
+// decodeIDCursor decodes a cursor from encodeIDCursor. An empty cursor
 // yields an invalid pgtype.Int8 (the query treats it as "first page").
-func decodeEventCursor(cursor string) (pgtype.Int8, error) {
+func decodeIDCursor(cursor string) (pgtype.Int8, error) {
 	if cursor == "" {
 		return pgtype.Int8{}, nil
 	}

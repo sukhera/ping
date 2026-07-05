@@ -202,6 +202,40 @@ func TestRateLimit_BlocksAndSetsRetryAfter(t *testing.T) {
 	}
 }
 
+func TestRateLimit_DisabledBypassesLimiterEntirely(t *testing.T) {
+	// e2e-only escape hatch (Deps.AuthRateLimitDisabled, PING_ENV=test): the
+	// limiter must not even be consulted, and a would-be-blocking verdict must
+	// not stop the request.
+	allowCalled := false
+	fs := &fakeAuthStore{
+		allowFn: func(ctx context.Context, key string, limit int, window time.Duration) (bool, time.Duration, error) {
+			allowCalled = true
+			return false, time.Minute, nil // would block if consulted
+		},
+		authenticateFn: func(ctx context.Context, email, password string) (store.AuthUser, error) {
+			return store.AuthUser{ID: "user-1", Email: email}, nil
+		},
+		issueRefreshTokenFn: func(ctx context.Context, userID string, ttl time.Duration) (store.RefreshToken, error) {
+			return store.RefreshToken{PlainToken: "plain-token", ExpiresAt: time.Now().Add(ttl)}, nil
+		},
+	}
+	deps := testDeps(t)
+	deps.AuthRateLimitDisabled = true
+	h := newAuthHandler(fs, deps)
+
+	body := `{"email":"a@example.com","password":"correcthorsebatterystaple"}`
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/v1/auth/login", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.login(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 (limiter disabled)", rec.Code)
+	}
+	if allowCalled {
+		t.Error("Allow was consulted, want limiter bypassed entirely when disabled")
+	}
+}
+
 func TestRateLimit_FailsOpenOnRedisError(t *testing.T) {
 	fs := &fakeAuthStore{
 		allowFn: func(ctx context.Context, key string, limit int, window time.Duration) (bool, time.Duration, error) {

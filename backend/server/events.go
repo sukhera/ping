@@ -155,3 +155,71 @@ func eventPageLimit(w http.ResponseWriter, r *http.Request) (int32, bool) {
 	}
 	return limit, true
 }
+
+// checkinResponse is one check-in log row (PING-014 DESIGN.md §7.2). Body is
+// passed through as raw text — the frontend renders it via React's default
+// text escaping (never dangerouslySetInnerHTML), so an HTML/script payload
+// stays inert on screen without any server-side sanitization needed.
+type checkinResponse struct {
+	ID        int64     `json:"id"`
+	MonitorID string    `json:"monitor_id"`
+	Kind      string    `json:"kind"`
+	SourceIP  string    `json:"source_ip,omitempty"`
+	UserAgent string    `json:"user_agent,omitempty"`
+	Body      string    `json:"body,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type checkinListResponse struct {
+	Checkins   []checkinResponse `json:"checkins"`
+	NextCursor string            `json:"next_cursor,omitempty"`
+}
+
+func toCheckinResponse(c store.Checkin) checkinResponse {
+	resp := checkinResponse{
+		ID:        c.ID,
+		MonitorID: c.MonitorID,
+		Kind:      c.Kind,
+		CreatedAt: c.CreatedAt,
+	}
+	if c.SourceIP != nil {
+		resp.SourceIP = *c.SourceIP
+	}
+	if c.UserAgent != nil {
+		resp.UserAgent = *c.UserAgent
+	}
+	if c.Body != nil {
+		resp.Body = *c.Body
+	}
+	return resp
+}
+
+// listMonitorCheckins is the per-monitor check-in log (PING-014). Ownership
+// is established via GetMonitor (403 vs 404) before reading the log, same as
+// listMonitorEvents.
+func (h *monitorHandler) listMonitorCheckins(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if _, err := h.store.GetMonitor(r.Context(), id, userIDFromContext(r.Context())); err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	limit, ok := eventPageLimit(w, r)
+	if !ok {
+		return
+	}
+	page, err := h.store.ListCheckinsByMonitor(r.Context(), id, r.URL.Query().Get("cursor"), limit)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	resp := checkinListResponse{
+		Checkins:   make([]checkinResponse, len(page.Checkins)),
+		NextCursor: page.NextCursor,
+	}
+	for i, c := range page.Checkins {
+		resp.Checkins[i] = toCheckinResponse(c)
+	}
+	writeJSON(w, http.StatusOK, resp)
+}

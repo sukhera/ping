@@ -84,7 +84,10 @@ func run(role string) error {
 			JWTRefreshTTL:    cfg.JWTRefreshTTL,
 			RegistrationOpen: cfg.RegistrationOpen,
 			CookieSecure:     cfg.Env == "production",
-			AlertChannel:     emailChannel(cfg.SMTP),
+			// e2e suites share one IP; disable the per-IP auth limiter only in
+			// the test env (never dev/production). See Deps.AuthRateLimitDisabled.
+			AuthRateLimitDisabled: cfg.Env == "test",
+			AlertChannel:          emailChannel(cfg.SMTP),
 		})
 
 		g.Go(func() error {

@@ -28,6 +28,8 @@ type fakeMonitorStore struct {
 	listEventsByUserFn    func(ctx context.Context, userID, monitorID, eventType, cursor string, limit int32) (store.EventPage, error)
 	listEventsByMonitorFn func(ctx context.Context, monitorID, eventType, cursor string, limit int32) (store.EventPage, error)
 	listDailyStatsFn      func(ctx context.Context, monitorIDs []string, since time.Time) (map[string][]store.DailyStat, error)
+
+	listCheckinsByMonitorFn func(ctx context.Context, monitorID, cursor string, limit int32) (store.CheckinPage, error)
 }
 
 func (f *fakeMonitorStore) CreateMonitor(ctx context.Context, p store.CreateMonitorParams) (store.Monitor, error) {
@@ -68,6 +70,12 @@ func (f *fakeMonitorStore) ListEventsByUser(ctx context.Context, userID, monitor
 }
 func (f *fakeMonitorStore) ListEventsByMonitor(ctx context.Context, monitorID, eventType, cursor string, limit int32) (store.EventPage, error) {
 	return f.listEventsByMonitorFn(ctx, monitorID, eventType, cursor, limit)
+}
+func (f *fakeMonitorStore) ListCheckinsByMonitor(ctx context.Context, monitorID, cursor string, limit int32) (store.CheckinPage, error) {
+	if f.listCheckinsByMonitorFn == nil {
+		return store.CheckinPage{}, nil
+	}
+	return f.listCheckinsByMonitorFn(ctx, monitorID, cursor, limit)
 }
 
 // withChiURLParam and withAuthedUser build a request as if it had already
@@ -234,6 +242,45 @@ func TestMonitorGet_Success(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+}
+
+// get attaches daily_stats (PING-014 detail page uptime bar + 7/30/90d %),
+// the same data the list handler already attaches per row.
+func TestMonitorGet_IncludesDailyStats(t *testing.T) {
+	var gotIDs []string
+	fs := &fakeMonitorStore{
+		getMonitorFn: func(ctx context.Context, id, callerUserID string) (store.Monitor, error) {
+			return store.Monitor{ID: id, UserID: callerUserID, Kind: "heartbeat", Name: "mine", TZ: "UTC"}, nil
+		},
+		listDailyStatsFn: func(_ context.Context, monitorIDs []string, _ time.Time) (map[string][]store.DailyStat, error) {
+			gotIDs = monitorIDs
+			return map[string][]store.DailyStat{
+				"m-1": {{Day: time.Now(), Checkins: 10, Failures: 1}},
+			}, nil
+		},
+	}
+	h := newMonitorHandler(fs, testDeps(t))
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/monitors/m-1", nil)
+	req = withAuthedUser(req, "user-1")
+	req = withChiURLParam(req, "id", "m-1")
+	rec := httptest.NewRecorder()
+	h.get(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if len(gotIDs) != 1 || gotIDs[0] != "m-1" {
+		t.Errorf("ListDailyStats ids = %v, want [m-1]", gotIDs)
+	}
+
+	var resp monitorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.DailyStats) != 1 || resp.DailyStats[0].Checkins != 10 {
+		t.Errorf("resp.DailyStats = %+v, want 1 row with 10 checkins", resp.DailyStats)
 	}
 }
 

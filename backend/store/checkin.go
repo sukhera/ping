@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/netip"
 	"time"
 
@@ -13,6 +14,26 @@ import (
 	"github.com/sukhera/ping/db"
 	"github.com/sukhera/ping/schedule"
 )
+
+// Checkin is the store's domain representation of a checkins row (PING-014
+// check-in log). SourceIP/UserAgent/Body are pointers: nil means the column
+// was NULL (no source IP recorded, no body sent, etc.), distinct from "".
+type Checkin struct {
+	ID        int64
+	MonitorID string
+	Kind      string
+	SourceIP  *string
+	UserAgent *string
+	Body      *string
+	CreatedAt time.Time
+}
+
+// CheckinPage is one page of a cursor-paginated check-in log. NextCursor is
+// empty when there are no more pages — mirrors EventPage.
+type CheckinPage struct {
+	Checkins   []Checkin
+	NextCursor string
+}
 
 // CheckinKind is the kind of ping received. It matches the checkins.kind CHECK
 // constraint ('success' | 'start' | 'fail') in migration 000003.
@@ -252,4 +273,67 @@ func parseSourceIP(ip string) *netip.Addr {
 		return nil
 	}
 	return &addr
+}
+
+// ListCheckinsByMonitor returns one monitor's check-in log, newest first.
+// Ownership must already be established by the caller (mirrors
+// ListEventsByMonitor's contract).
+func (s *Store) ListCheckinsByMonitor(ctx context.Context, monitorID, cursor string, limit int32) (CheckinPage, error) {
+	monitorUUID, err := pgUUID(monitorID)
+	if err != nil {
+		return CheckinPage{}, newHTTPError(ErrNotFound, http.StatusNotFound)
+	}
+
+	cursorID, err := decodeIDCursor(cursor)
+	if err != nil {
+		return CheckinPage{}, newHTTPError(fmt.Errorf("invalid cursor"), http.StatusBadRequest)
+	}
+
+	rows, err := s.q.ListCheckinsByMonitorPage(ctx, db.ListCheckinsByMonitorPageParams{
+		MonitorID: monitorUUID,
+		CursorID:  cursorID,
+		PageLimit: limit,
+	})
+	if err != nil {
+		return CheckinPage{}, fmt.Errorf("store: list checkins by monitor: %w", err)
+	}
+	return toCheckinPage(rows, limit), nil
+}
+
+// toCheckinPage converts sqlc rows to a CheckinPage, setting NextCursor when
+// the page is full (mirrors toEventPage's convention).
+func toCheckinPage(rows []db.Checkin, limit int32) CheckinPage {
+	page := CheckinPage{Checkins: make([]Checkin, len(rows))}
+	for i, r := range rows {
+		page.Checkins[i] = Checkin{
+			ID:        r.ID,
+			MonitorID: r.MonitorID.String(),
+			Kind:      r.Kind,
+			SourceIP:  sourceIPString(r.SourceIp),
+			UserAgent: textPtr(r.UserAgent),
+			Body:      textPtr(r.Body),
+			CreatedAt: r.CreatedAt.Time,
+		}
+	}
+	if len(rows) == int(limit) {
+		page.NextCursor = encodeIDCursor(rows[len(rows)-1].ID)
+	}
+	return page
+}
+
+// sourceIPString converts a nullable *netip.Addr to *string, nil when absent.
+func sourceIPString(addr *netip.Addr) *string {
+	if addr == nil {
+		return nil
+	}
+	s := addr.String()
+	return &s
+}
+
+// textPtr converts a pgtype.Text to *string, nil when NULL.
+func textPtr(t pgtype.Text) *string {
+	if !t.Valid {
+		return nil
+	}
+	return &t.String
 }

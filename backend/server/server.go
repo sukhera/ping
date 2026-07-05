@@ -41,6 +41,13 @@ type Deps struct {
 	// production, false so cookies work over plain http in local dev.
 	CookieSecure bool
 
+	// AuthRateLimitDisabled turns off the per-IP auth rate limiter
+	// (register/login). Set ONLY in the e2e test environment (PING_ENV=test):
+	// the Playwright suite shares one IP across all workers, so a growing set
+	// of spec files quickly exhausts the tight 5/min per-IP budget. Never
+	// enabled in dev or production — the limiter is a real abuse control there.
+	AuthRateLimitDisabled bool
+
 	// AlertChannel delivers emails for the "send test email" endpoint. Nil
 	// when SMTP is unconfigured; the handler reports that clearly.
 	AlertChannel alert.Channel
@@ -103,6 +110,7 @@ func New(addr string, deps Deps) *http.Server {
 			r.Post("/{id}/mute", mh.mute)
 			r.Post("/{id}/unmute", mh.unmute)
 			r.Get("/{id}/events", mh.listMonitorEvents)
+			r.Get("/{id}/checkins", mh.listMonitorCheckins)
 		})
 	})
 
