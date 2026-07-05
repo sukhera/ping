@@ -186,3 +186,84 @@ describe("usePauseMonitor", () => {
     await waitFor(() => expect(list.result.current.data?.monitors[0].display_state).toBe("up"));
   });
 });
+
+describe("useCreateMonitor", () => {
+  it("seeds the detail cache and invalidates list queries on success", async () => {
+    const created = monitorFixture({ id: "new-1", name: "new monitor" });
+    server.use(
+      http.get(`${BASE}/api/v1/monitors`, () => HttpResponse.json({ monitors: [] })),
+      http.post(`${BASE}/api/v1/monitors`, () => HttpResponse.json(created, { status: 201 })),
+    );
+    const { useCreateMonitor, useMonitor } = await freshHooks();
+    const w = wrapper();
+
+    const mutation = renderHook(() => useCreateMonitor(), { wrapper: w });
+    mutation.result.current.mutate({ kind: "heartbeat", name: "new monitor" });
+    await waitFor(() => expect(mutation.result.current.isSuccess).toBe(true));
+
+    const detail = renderHook(() => useMonitor("new-1"), { wrapper: w });
+    await waitFor(() => expect(detail.result.current.data?.name).toBe("new monitor"));
+  });
+});
+
+describe("useUpdateMonitor", () => {
+  it("writes the server's returned monitor into the detail cache", async () => {
+    server.use(
+      http.get(`${BASE}/api/v1/monitors/m1`, () => HttpResponse.json(monitorFixture({ name: "old" }))),
+      http.patch(`${BASE}/api/v1/monitors/m1`, () => HttpResponse.json(monitorFixture({ name: "renamed" }))),
+    );
+    const { useUpdateMonitor, useMonitor } = await freshHooks();
+    const w = wrapper();
+
+    const detail = renderHook(() => useMonitor("m1"), { wrapper: w });
+    await waitFor(() => expect(detail.result.current.data?.name).toBe("old"));
+
+    const mutation = renderHook(() => useUpdateMonitor("m1"), { wrapper: w });
+    mutation.result.current.mutate({ name: "renamed" });
+    await waitFor(() => expect(mutation.result.current.isSuccess).toBe(true));
+    await waitFor(() => expect(detail.result.current.data?.name).toBe("renamed"));
+  });
+});
+
+describe("useDescribeSchedule", () => {
+  it("does not call the API while disabled", async () => {
+    let called = false;
+    server.use(
+      http.post(`${BASE}/api/v1/schedule/describe`, () => {
+        called = true;
+        return HttpResponse.json({ description: "unused" });
+      }),
+    );
+    const { useDescribeSchedule } = await freshHooks();
+
+    renderHook(() => useDescribeSchedule({ schedule_kind: "period", period_s: 60 }, false), {
+      wrapper: wrapper(),
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(called).toBe(false);
+  });
+
+  it("fetches the description and next_runs when enabled", async () => {
+    server.use(
+      http.post(`${BASE}/api/v1/schedule/describe`, () =>
+        HttpResponse.json({
+          description: "every day at 04:00 (UTC); alert if 30 min late",
+          next_runs: ["2026-01-02T04:00:00Z"],
+        }),
+      ),
+    );
+    const { useDescribeSchedule } = await freshHooks();
+
+    const { result } = renderHook(
+      () =>
+        useDescribeSchedule(
+          { schedule_kind: "cron", cron_expr: "0 4 * * *", tz: "UTC", grace_s: 1800 },
+          true,
+        ),
+      { wrapper: wrapper() },
+    );
+
+    await waitFor(() => expect(result.current.data?.description).toContain("every day at 04:00"));
+    expect(result.current.data?.next_runs).toEqual(["2026-01-02T04:00:00Z"]);
+  });
+});

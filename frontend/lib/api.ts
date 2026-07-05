@@ -1,11 +1,15 @@
 import type {
   CheckinListParams,
   CheckinListResponse,
+  CreateMonitorRequest,
+  DescribeScheduleRequest,
+  DescribeScheduleResponse,
   EventListParams,
   EventListResponse,
   Monitor,
   MonitorListParams,
   MonitorListResponse,
+  UpdateMonitorRequest,
 } from "@/types/monitor";
 
 const BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
@@ -25,11 +29,15 @@ function setAccessToken(token: string | null): void {
 
 export class ApiError extends Error {
   status: number;
+  // field is set for 422 field-level validation errors (monitor create/edit,
+  // schedule describe) — see backend/server/monitor.go's fieldErrorResponse.
+  field?: string;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, field?: string) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.field = field;
   }
 }
 
@@ -68,12 +76,12 @@ async function rawFetch(path: string, init: RequestInit = {}): Promise<Response>
   }
 }
 
-async function parseErrorBody(res: Response): Promise<string> {
+async function parseErrorBody(res: Response): Promise<{ message: string; field?: string }> {
   try {
-    const body = (await res.json()) as { error?: string };
-    return body.error ?? `request failed (${res.status})`;
+    const body = (await res.json()) as { error?: string; field?: string };
+    return { message: body.error ?? `request failed (${res.status})`, field: body.field };
   } catch {
-    return `request failed (${res.status})`;
+    return { message: `request failed (${res.status})` };
   }
 }
 
@@ -118,7 +126,8 @@ export async function apiFetch<T>(
   }
 
   if (!res.ok) {
-    throw new ApiError(res.status, await parseErrorBody(res));
+    const { message, field } = await parseErrorBody(res);
+    throw new ApiError(res.status, message, field);
   }
   if (res.status === 204) {
     return undefined as T;
@@ -165,6 +174,31 @@ export async function listMonitors(
 
 export async function getMonitor(id: string, signal?: AbortSignal): Promise<Monitor> {
   return apiFetch<Monitor>(`/api/v1/monitors/${id}`, {}, signal);
+}
+
+export async function createMonitor(body: CreateMonitorRequest): Promise<Monitor> {
+  return apiFetch<Monitor>("/api/v1/monitors", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function updateMonitor(id: string, body: UpdateMonitorRequest): Promise<Monitor> {
+  return apiFetch<Monitor>(`/api/v1/monitors/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function describeSchedule(
+  body: DescribeScheduleRequest,
+  signal?: AbortSignal,
+): Promise<DescribeScheduleResponse> {
+  return apiFetch<DescribeScheduleResponse>(
+    "/api/v1/schedule/describe",
+    { method: "POST", body: JSON.stringify(body) },
+    signal,
+  );
 }
 
 export async function listMonitorCheckins(

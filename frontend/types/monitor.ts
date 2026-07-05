@@ -9,6 +9,15 @@ export type DailyStat = {
   downtime_s: number;
 };
 
+export type ScheduleKind = "period" | "cron";
+
+export type HTTPConfig = {
+  headers?: Record<string, string>;
+  keyword?: string;
+  keyword_negate?: boolean;
+  follow_redirects?: boolean;
+};
+
 export type Monitor = {
   id: string;
   kind: MonitorKind;
@@ -17,7 +26,7 @@ export type Monitor = {
   state: MonitorState;
   display_state: MonitorDisplayState;
   ping_url?: string;
-  schedule_kind?: "period" | "cron";
+  schedule_kind?: ScheduleKind;
   period_s?: number;
   cron_expr?: string;
   tz?: string;
@@ -27,6 +36,7 @@ export type Monitor = {
   interval_s?: number;
   timeout_s?: number;
   fail_threshold?: number;
+  http_config?: HTTPConfig;
   fail_streak: number;
   alerts_muted: boolean;
   auto_resume: boolean;
@@ -37,6 +47,45 @@ export type Monitor = {
   updated_at: string;
   schedule_summary?: string;
   daily_stats?: DailyStat[];
+};
+
+// Shared by create/update monitor requests and the schedule-describe preview
+// request — mirrors backend/server/monitor.go's scheduleFields.
+export type ScheduleFields = {
+  schedule_kind?: ScheduleKind;
+  period_s?: number;
+  cron_expr?: string;
+  tz?: string;
+  grace_s?: number;
+};
+
+export type HTTPFields = {
+  url?: string;
+  method?: string;
+  interval_s?: number;
+  timeout_s?: number;
+  fail_threshold?: number;
+  http_config?: HTTPConfig;
+};
+
+export type CreateMonitorRequest = {
+  kind: MonitorKind;
+  name: string;
+  auto_resume?: boolean;
+} & ScheduleFields &
+  HTTPFields;
+
+export type UpdateMonitorRequest = {
+  name?: string;
+  auto_resume?: boolean;
+} & ScheduleFields &
+  HTTPFields;
+
+export type DescribeScheduleRequest = ScheduleFields;
+
+export type DescribeScheduleResponse = {
+  description: string;
+  next_runs?: string[];
 };
 
 export type MonitorListResponse = {

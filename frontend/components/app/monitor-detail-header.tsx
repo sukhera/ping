@@ -83,9 +83,6 @@ export function MonitorDetailHeader({ monitor }: { monitor: Monitor }) {
             Mute alerts
           </Button>
         )}
-        {/* PING-015 (create/edit monitor form) isn't built yet — the link is
-            wired to its future route now so the header matches DESIGN.md
-            §7.2 in full; it 404s until that ticket ships. */}
         <Button asChild variant="outline" size="sm">
           <Link href={`/monitors/${monitor.id}/edit`}>Edit</Link>
         </Button>

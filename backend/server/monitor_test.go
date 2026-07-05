@@ -401,6 +401,34 @@ func TestDescribeSchedule_ValidConfigReturnsDescription(t *testing.T) {
 	if resp.Description != want {
 		t.Errorf("description = %q, want %q", resp.Description, want)
 	}
+	if len(resp.NextRuns) != nextRunsCount {
+		t.Fatalf("len(next_runs) = %d, want %d", len(resp.NextRuns), nextRunsCount)
+	}
+	for i := 1; i < len(resp.NextRuns); i++ {
+		if !resp.NextRuns[i].After(resp.NextRuns[i-1]) {
+			t.Errorf("next_runs[%d] = %v is not after next_runs[%d] = %v", i, resp.NextRuns[i], i-1, resp.NextRuns[i-1])
+		}
+	}
+}
+
+func TestDescribeSchedule_PeriodConfigOmitsNextRuns(t *testing.T) {
+	h := newMonitorHandler(&fakeMonitorStore{}, testDeps(t))
+
+	body := `{"schedule_kind":"period","period_s":300,"tz":"UTC","grace_s":60}`
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/v1/schedule/describe", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.describeSchedule(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	var resp describeResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.NextRuns) != 0 {
+		t.Errorf("next_runs = %v, want empty for a period schedule", resp.NextRuns)
+	}
 }
 
 func TestDescribeSchedule_InvalidConfigReturns422(t *testing.T) {

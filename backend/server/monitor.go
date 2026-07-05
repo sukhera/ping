@@ -110,31 +110,36 @@ type updateMonitorRequest struct {
 }
 
 type monitorResponse struct {
-	ID            string     `json:"id"`
-	Kind          string     `json:"kind"`
-	Slug          string     `json:"slug"`
-	Name          string     `json:"name"`
-	State         string     `json:"state"`
-	DisplayState  string     `json:"display_state"`
-	PingURL       string     `json:"ping_url,omitempty"`
-	ScheduleKind  string     `json:"schedule_kind,omitempty"`
-	PeriodS       *int32     `json:"period_s,omitempty"`
-	CronExpr      string     `json:"cron_expr,omitempty"`
-	TZ            string     `json:"tz,omitempty"`
-	GraceS        *int32     `json:"grace_s,omitempty"`
-	URL           string     `json:"url,omitempty"`
-	Method        string     `json:"method,omitempty"`
-	IntervalS     *int32     `json:"interval_s,omitempty"`
-	TimeoutS      *int32     `json:"timeout_s,omitempty"`
-	FailThreshold *int32     `json:"fail_threshold,omitempty"`
-	FailStreak    int32      `json:"fail_streak"`
-	AlertsMuted   bool       `json:"alerts_muted"`
-	AutoResume    bool       `json:"auto_resume"`
-	LastCheckinAt *time.Time `json:"last_checkin_at,omitempty"`
-	NextDeadline  *time.Time `json:"next_deadline,omitempty"`
-	PausedAt      *time.Time `json:"paused_at,omitempty"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
+	ID            string `json:"id"`
+	Kind          string `json:"kind"`
+	Slug          string `json:"slug"`
+	Name          string `json:"name"`
+	State         string `json:"state"`
+	DisplayState  string `json:"display_state"`
+	PingURL       string `json:"ping_url,omitempty"`
+	ScheduleKind  string `json:"schedule_kind,omitempty"`
+	PeriodS       *int32 `json:"period_s,omitempty"`
+	CronExpr      string `json:"cron_expr,omitempty"`
+	TZ            string `json:"tz,omitempty"`
+	GraceS        *int32 `json:"grace_s,omitempty"`
+	URL           string `json:"url,omitempty"`
+	Method        string `json:"method,omitempty"`
+	IntervalS     *int32 `json:"interval_s,omitempty"`
+	TimeoutS      *int32 `json:"timeout_s,omitempty"`
+	FailThreshold *int32 `json:"fail_threshold,omitempty"`
+	// HTTPConfig round-trips store.Monitor.HTTPConfig verbatim so the edit
+	// form (PING-015) can pre-fill advanced fields (headers, keyword,
+	// redirects) — the prober (PING-017) is the only other reader/writer of
+	// this JSONB blob, so its shape isn't validated here beyond "valid JSON".
+	HTTPConfig    json.RawMessage `json:"http_config,omitempty"`
+	FailStreak    int32           `json:"fail_streak"`
+	AlertsMuted   bool            `json:"alerts_muted"`
+	AutoResume    bool            `json:"auto_resume"`
+	LastCheckinAt *time.Time      `json:"last_checkin_at,omitempty"`
+	NextDeadline  *time.Time      `json:"next_deadline,omitempty"`
+	PausedAt      *time.Time      `json:"paused_at,omitempty"`
+	CreatedAt     time.Time       `json:"created_at"`
+	UpdatedAt     time.Time       `json:"updated_at"`
 
 	// ScheduleSummary is a human-readable schedule description (PING-013 row
 	// column): schedule.Describe() output for heartbeat monitors, a hand-built
@@ -175,6 +180,7 @@ func toMonitorResponse(m store.Monitor, baseURL string) monitorResponse {
 		IntervalS:     m.IntervalS,
 		TimeoutS:      m.TimeoutS,
 		FailThreshold: m.FailThreshold,
+		HTTPConfig:    json.RawMessage(m.HTTPConfig),
 		FailStreak:    m.FailStreak,
 		AlertsMuted:   m.AlertsMuted,
 		AutoResume:    m.AutoResume,
@@ -397,8 +403,12 @@ type describeRequest struct {
 }
 
 type describeResponse struct {
-	Description string `json:"description"`
+	Description string      `json:"description"`
+	NextRuns    []time.Time `json:"next_runs,omitempty"`
 }
+
+// nextRunsCount is the DESIGN.md §7.3 "next-3-runs" cron preview size.
+const nextRunsCount = 3
 
 func (h *monitorHandler) describeSchedule(w http.ResponseWriter, r *http.Request) {
 	var req describeRequest
@@ -413,7 +423,24 @@ func (h *monitorHandler) describeSchedule(w http.ResponseWriter, r *http.Request
 		writeScheduleValidationError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, describeResponse{Description: description})
+
+	resp := describeResponse{Description: description}
+	if cfg.Kind == schedule.KindCron {
+		now := time.Now()
+		from := time.Time{}
+		for range nextRunsCount {
+			occ, err := schedule.NextOccurrence(cfg, from, now)
+			if err != nil {
+				// cfg already validated above via schedule.Describe, so this
+				// can't actually fail — degrade to a shorter/empty list
+				// rather than 500 a request that already succeeded once.
+				break
+			}
+			resp.NextRuns = append(resp.NextRuns, occ)
+			from = occ
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // validateCreate checks kind-conditional required fields (request-shape
