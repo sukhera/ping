@@ -2,6 +2,8 @@ package prober
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -126,5 +128,50 @@ func TestRunProbe_SSRFRejection(t *testing.T) {
 	}
 	if res.Error != "target address not allowed" {
 		t.Errorf("runProbe.Error = %q, want %q", res.Error, "target address not allowed")
+	}
+}
+
+// TestRunProbe_CapturesTLSExpiry covers PING-018: a successful https probe
+// records the leaf certificate's NotAfter as TLSExpiresAt. The guarded
+// client's transport otherwise leaves certificate verification on (per
+// newHTTPClient's doc comment), so this test trusts the test server's
+// self-signed cert via TLSClientConfig.RootCAs — verification itself stays on.
+func TestRunProbe_CapturesTLSExpiry(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	pool := x509.NewCertPool()
+	pool.AddCert(srv.Certificate())
+
+	client := loopbackClient(2*time.Second, true)
+	client.Transport.(*http.Transport).TLSClientConfig = &tls.Config{RootCAs: pool}
+
+	res := runProbe(context.Background(), client, "GET", srv.URL, httpConfig{})
+	if !res.OK {
+		t.Fatalf("runProbe = %+v, want OK", res)
+	}
+	if res.TLSExpiresAt == nil {
+		t.Fatal("runProbe.TLSExpiresAt is nil, want the test cert's NotAfter")
+	}
+	if !res.TLSExpiresAt.Equal(srv.Certificate().NotAfter) {
+		t.Errorf("TLSExpiresAt = %v, want %v", res.TLSExpiresAt, srv.Certificate().NotAfter)
+	}
+}
+
+func TestRunProbe_PlainHTTPHasNoTLSExpiry(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	client := loopbackClient(2*time.Second, true)
+	res := runProbe(context.Background(), client, "GET", srv.URL, httpConfig{})
+	if !res.OK {
+		t.Fatalf("runProbe = %+v, want OK", res)
+	}
+	if res.TLSExpiresAt != nil {
+		t.Errorf("TLSExpiresAt = %v for a plain http probe, want nil", res.TLSExpiresAt)
 	}
 }

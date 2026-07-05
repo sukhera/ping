@@ -12,7 +12,7 @@ import (
 )
 
 const claimDueMonitors = `-- name: ClaimDueMonitors :many
-SELECT id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at, auto_resume, reminder_every_s FROM monitors
+SELECT id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at, auto_resume, reminder_every_s, tls_warned_expires_at FROM monitors
 WHERE next_deadline < $1
   AND state IN ('up', 'late')
   AND paused_at IS NULL
@@ -68,6 +68,7 @@ func (q *Queries) ClaimDueMonitors(ctx context.Context, arg ClaimDueMonitorsPara
 			&i.UpdatedAt,
 			&i.AutoResume,
 			&i.ReminderEveryS,
+			&i.TlsWarnedExpiresAt,
 		); err != nil {
 			return nil, err
 		}
@@ -80,7 +81,7 @@ func (q *Queries) ClaimDueMonitors(ctx context.Context, arg ClaimDueMonitorsPara
 }
 
 const claimDueProbes = `-- name: ClaimDueProbes :many
-SELECT id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at, auto_resume, reminder_every_s FROM monitors
+SELECT id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at, auto_resume, reminder_every_s, tls_warned_expires_at FROM monitors
 WHERE next_probe_at < $1
   AND kind = 'http'
   AND paused_at IS NULL
@@ -135,6 +136,7 @@ func (q *Queries) ClaimDueProbes(ctx context.Context, arg ClaimDueProbesParams) 
 			&i.UpdatedAt,
 			&i.AutoResume,
 			&i.ReminderEveryS,
+			&i.TlsWarnedExpiresAt,
 		); err != nil {
 			return nil, err
 		}
@@ -161,7 +163,7 @@ INSERT INTO monitors (
     COALESCE($16::boolean, true),
     CASE WHEN $2 = 'http' THEN now() ELSE NULL END
 )
-RETURNING id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at, auto_resume, reminder_every_s
+RETURNING id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at, auto_resume, reminder_every_s, tls_warned_expires_at
 `
 
 type CreateMonitorParams struct {
@@ -234,6 +236,7 @@ func (q *Queries) CreateMonitor(ctx context.Context, arg CreateMonitorParams) (M
 		&i.UpdatedAt,
 		&i.AutoResume,
 		&i.ReminderEveryS,
+		&i.TlsWarnedExpiresAt,
 	)
 	return i, err
 }
@@ -259,7 +262,7 @@ func (q *Queries) DeleteMonitor(ctx context.Context, arg DeleteMonitorParams) (i
 }
 
 const getMonitorByID = `-- name: GetMonitorByID :one
-SELECT id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at, auto_resume, reminder_every_s FROM monitors
+SELECT id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at, auto_resume, reminder_every_s, tls_warned_expires_at FROM monitors
 WHERE id = $1
 `
 
@@ -294,12 +297,13 @@ func (q *Queries) GetMonitorByID(ctx context.Context, id pgtype.UUID) (Monitor, 
 		&i.UpdatedAt,
 		&i.AutoResume,
 		&i.ReminderEveryS,
+		&i.TlsWarnedExpiresAt,
 	)
 	return i, err
 }
 
 const getMonitorBySlug = `-- name: GetMonitorBySlug :one
-SELECT id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at, auto_resume, reminder_every_s FROM monitors
+SELECT id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at, auto_resume, reminder_every_s, tls_warned_expires_at FROM monitors
 WHERE slug = $1
 `
 
@@ -334,12 +338,13 @@ func (q *Queries) GetMonitorBySlug(ctx context.Context, slug string) (Monitor, e
 		&i.UpdatedAt,
 		&i.AutoResume,
 		&i.ReminderEveryS,
+		&i.TlsWarnedExpiresAt,
 	)
 	return i, err
 }
 
 const getMonitorBySlugForUpdate = `-- name: GetMonitorBySlugForUpdate :one
-SELECT id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at, auto_resume, reminder_every_s FROM monitors
+SELECT id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at, auto_resume, reminder_every_s, tls_warned_expires_at FROM monitors
 WHERE slug = $1
 FOR UPDATE
 `
@@ -379,12 +384,13 @@ func (q *Queries) GetMonitorBySlugForUpdate(ctx context.Context, slug string) (M
 		&i.UpdatedAt,
 		&i.AutoResume,
 		&i.ReminderEveryS,
+		&i.TlsWarnedExpiresAt,
 	)
 	return i, err
 }
 
 const listMonitorsByUser = `-- name: ListMonitorsByUser :many
-SELECT id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at, auto_resume, reminder_every_s FROM monitors
+SELECT id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at, auto_resume, reminder_every_s, tls_warned_expires_at FROM monitors
 WHERE user_id = $1
 ORDER BY created_at DESC
 `
@@ -426,6 +432,7 @@ func (q *Queries) ListMonitorsByUser(ctx context.Context, userID pgtype.UUID) ([
 			&i.UpdatedAt,
 			&i.AutoResume,
 			&i.ReminderEveryS,
+			&i.TlsWarnedExpiresAt,
 		); err != nil {
 			return nil, err
 		}
@@ -438,7 +445,7 @@ func (q *Queries) ListMonitorsByUser(ctx context.Context, userID pgtype.UUID) ([
 }
 
 const listMonitorsByUserPage = `-- name: ListMonitorsByUserPage :many
-SELECT id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at, auto_resume, reminder_every_s FROM monitors
+SELECT id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at, auto_resume, reminder_every_s, tls_warned_expires_at FROM monitors
 WHERE user_id = $1
   AND (
     $2::timestamptz IS NULL
@@ -528,6 +535,7 @@ func (q *Queries) ListMonitorsByUserPage(ctx context.Context, arg ListMonitorsBy
 			&i.UpdatedAt,
 			&i.AutoResume,
 			&i.ReminderEveryS,
+			&i.TlsWarnedExpiresAt,
 		); err != nil {
 			return nil, err
 		}
@@ -581,7 +589,7 @@ const muteMonitor = `-- name: MuteMonitor :one
 UPDATE monitors
 SET alerts_muted = true, updated_at = now()
 WHERE id = $1 AND user_id = $2
-RETURNING id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at, auto_resume, reminder_every_s
+RETURNING id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at, auto_resume, reminder_every_s, tls_warned_expires_at
 `
 
 type MuteMonitorParams struct {
@@ -620,6 +628,7 @@ func (q *Queries) MuteMonitor(ctx context.Context, arg MuteMonitorParams) (Monit
 		&i.UpdatedAt,
 		&i.AutoResume,
 		&i.ReminderEveryS,
+		&i.TlsWarnedExpiresAt,
 	)
 	return i, err
 }
@@ -628,7 +637,7 @@ const pauseMonitor = `-- name: PauseMonitor :one
 UPDATE monitors
 SET paused_at = now(), updated_at = now()
 WHERE id = $1 AND user_id = $2
-RETURNING id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at, auto_resume, reminder_every_s
+RETURNING id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at, auto_resume, reminder_every_s, tls_warned_expires_at
 `
 
 type PauseMonitorParams struct {
@@ -670,6 +679,7 @@ func (q *Queries) PauseMonitor(ctx context.Context, arg PauseMonitorParams) (Mon
 		&i.UpdatedAt,
 		&i.AutoResume,
 		&i.ReminderEveryS,
+		&i.TlsWarnedExpiresAt,
 	)
 	return i, err
 }
@@ -681,7 +691,7 @@ SET paused_at     = NULL,
     next_deadline = $1,
     updated_at    = now()
 WHERE id = $2 AND user_id = $3
-RETURNING id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at, auto_resume, reminder_every_s
+RETURNING id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at, auto_resume, reminder_every_s, tls_warned_expires_at
 `
 
 type ResumeMonitorParams struct {
@@ -726,6 +736,7 @@ func (q *Queries) ResumeMonitor(ctx context.Context, arg ResumeMonitorParams) (M
 		&i.UpdatedAt,
 		&i.AutoResume,
 		&i.ReminderEveryS,
+		&i.TlsWarnedExpiresAt,
 	)
 	return i, err
 }
@@ -734,7 +745,7 @@ const unmuteMonitor = `-- name: UnmuteMonitor :one
 UPDATE monitors
 SET alerts_muted = false, updated_at = now()
 WHERE id = $1 AND user_id = $2
-RETURNING id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at, auto_resume, reminder_every_s
+RETURNING id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at, auto_resume, reminder_every_s, tls_warned_expires_at
 `
 
 type UnmuteMonitorParams struct {
@@ -773,6 +784,7 @@ func (q *Queries) UnmuteMonitor(ctx context.Context, arg UnmuteMonitorParams) (M
 		&i.UpdatedAt,
 		&i.AutoResume,
 		&i.ReminderEveryS,
+		&i.TlsWarnedExpiresAt,
 	)
 	return i, err
 }
@@ -795,7 +807,7 @@ SET
     auto_resume    = COALESCE($13::boolean, auto_resume),
     updated_at     = now()
 WHERE id = $14 AND user_id = $15
-RETURNING id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at, auto_resume, reminder_every_s
+RETURNING id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at, auto_resume, reminder_every_s, tls_warned_expires_at
 `
 
 type UpdateMonitorParams struct {
@@ -867,6 +879,7 @@ func (q *Queries) UpdateMonitor(ctx context.Context, arg UpdateMonitorParams) (M
 		&i.UpdatedAt,
 		&i.AutoResume,
 		&i.ReminderEveryS,
+		&i.TlsWarnedExpiresAt,
 	)
 	return i, err
 }

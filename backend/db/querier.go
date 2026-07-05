@@ -78,6 +78,14 @@ type Querier interface {
 	// populated for https targets so PING-018 can add expiry-warning logic on
 	// top without another migration; it is NULL for http or on a failed probe.
 	InsertProbeResult(ctx context.Context, arg InsertProbeResultParams) (ProbeResult, error)
+	// LatencySeriesByMonitor is the latency chart's backing query (PING-018):
+	// buckets successful probes into fixed-width time buckets over [since, now)
+	// and computes p50/p95/avg latency per bucket via PERCENTILE_CONT, so the
+	// frontend gets pre-aggregated points instead of raw probe rows regardless of
+	// the requested window (24h/7d/30d map to different bucket_seconds chosen by
+	// the caller). Failed probes are excluded — a failure has no meaningful
+	// latency signal and would skew the percentiles.
+	LatencySeriesByMonitor(ctx context.Context, arg LatencySeriesByMonitorParams) ([]LatencySeriesByMonitorRow, error)
 	// LatestDownEventBefore finds the most recent 'down' event for a monitor at or
 	// before a given time — the start of the current outage. The alerter uses it to
 	// compute recovery downtime ("recovered after 42m") for an 'up' alert.
@@ -115,6 +123,13 @@ type Querier interface {
 	// derivation inline rather than comparing against the raw state column — a
 	// paused monitor must not surface under its frozen pre-pause state.
 	ListMonitorsByUserPage(ctx context.Context, arg ListMonitorsByUserPageParams) ([]Monitor, error)
+	// ListProbeResultsByMonitor is the HTTP monitor probe log (PING-018):
+	// cursor-paginated, newest first, optionally filtered to only failed
+	// (?outcome=fail) or only successful (?outcome=success) probes. Uses
+	// idx_probe_results_mon (monitor_id, created_at DESC); the id-based cursor
+	// (WHERE id < cursor) keeps pagination stable under concurrent inserts, same
+	// pattern as the events/checkins feeds.
+	ListProbeResultsByMonitor(ctx context.Context, arg ListProbeResultsByMonitorParams) ([]ProbeResult, error)
 	// MarkAlertFailed terminally fails an alert (retries exhausted or a permanent
 	// delivery error). The alerter also writes an 'alert_failed' event in the same
 	// transaction so the failure is visible on the monitor's timeline.
@@ -153,6 +168,11 @@ type Querier interface {
 	// can no longer both succeed, since only one UPDATE can match the WHERE
 	// clause before rotated_at becomes non-null.
 	RotateRefreshTokenIfUnrotated(ctx context.Context, id pgtype.UUID) (RefreshToken, error)
+	// SetTLSWarnedExpiry records the tls_expires_at value a TLS-expiry warning was
+	// just sent for (PING-018), so the next probe against the same certificate
+	// (same tls_expires_at) does not re-warn. Passing a later tls_expires_at
+	// (certificate renewed) naturally re-arms the warning on its own next expiry.
+	SetTLSWarnedExpiry(ctx context.Context, arg SetTLSWarnedExpiryParams) error
 	// SuppressAlert resolves an alert that must not be delivered (monitor muted)
 	// without sending it. It reuses the terminal 'sent' status so the row leaves the
 	// pending outbox and is never retried; sent_at stays NULL to distinguish a

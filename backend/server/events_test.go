@@ -245,3 +245,181 @@ func TestListMonitorCheckinsHandler_InvalidLimit400(t *testing.T) {
 		t.Fatalf("status = %d, want 400", rec.Code)
 	}
 }
+
+func TestListMonitorProbeResultsHandler_ForeignMonitorReturns403(t *testing.T) {
+	fs := &fakeMonitorStore{
+		getMonitorFn: func(ctx context.Context, id, callerUserID string) (store.Monitor, error) {
+			return store.Monitor{}, errForbiddenForTest{}
+		},
+		listProbeResultsByMonitorFn: func(context.Context, string, string, string, int32) (store.ProbeResultPage, error) {
+			t.Fatal("store must not be called when ownership check fails")
+			return store.ProbeResultPage{}, nil
+		},
+	}
+	h := newMonitorHandler(fs, testDeps(t))
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/monitors/m-1/probe-results", nil)
+	req = withAuthedUser(req, "user-2")
+	req = withChiURLParam(req, "id", "m-1")
+	rec := httptest.NewRecorder()
+	h.listMonitorProbeResults(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+}
+
+func TestListMonitorProbeResultsHandler_PassesOutcomeCursorLimitToStore(t *testing.T) {
+	var gotMonitor, gotOutcome, gotCursor string
+	var gotLimit int32
+	status := int32(500)
+	latency := int32(120)
+	fs := &fakeMonitorStore{
+		getMonitorFn: func(ctx context.Context, id, callerUserID string) (store.Monitor, error) {
+			return store.Monitor{ID: id, UserID: callerUserID}, nil
+		},
+		listProbeResultsByMonitorFn: func(_ context.Context, monitorID, outcome, cursor string, limit int32) (store.ProbeResultPage, error) {
+			gotMonitor, gotOutcome, gotCursor, gotLimit = monitorID, outcome, cursor, limit
+			return store.ProbeResultPage{
+				Results: []store.ProbeResult{{
+					ID: 1, MonitorID: monitorID, OK: false,
+					HTTPStatus: &status, LatencyMS: &latency, Error: "unexpected status 500",
+				}},
+				NextCursor: "next-abc",
+			}, nil
+		},
+	}
+	h := newMonitorHandler(fs, testDeps(t))
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet,
+		"/api/v1/monitors/m-1/probe-results?outcome=fail&cursor=cur&limit=5", nil)
+	req = withAuthedUser(req, "user-1")
+	req = withChiURLParam(req, "id", "m-1")
+	rec := httptest.NewRecorder()
+	h.listMonitorProbeResults(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if gotMonitor != "m-1" || gotOutcome != "fail" || gotCursor != "cur" || gotLimit != 5 {
+		t.Errorf("args = (%q,%q,%q,%d), want (m-1,fail,cur,5)", gotMonitor, gotOutcome, gotCursor, gotLimit)
+	}
+
+	var resp probeResultListResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Results) != 1 || resp.NextCursor != "next-abc" {
+		t.Fatalf("resp = %+v, want 1 result + cursor next-abc", resp)
+	}
+}
+
+func TestListMonitorProbeResultsHandler_InvalidOutcome400(t *testing.T) {
+	fs := &fakeMonitorStore{
+		getMonitorFn: func(ctx context.Context, id, callerUserID string) (store.Monitor, error) {
+			return store.Monitor{ID: id, UserID: callerUserID}, nil
+		},
+		listProbeResultsByMonitorFn: func(context.Context, string, string, string, int32) (store.ProbeResultPage, error) {
+			t.Fatal("store must not be called on invalid outcome")
+			return store.ProbeResultPage{}, nil
+		},
+	}
+	h := newMonitorHandler(fs, testDeps(t))
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/monitors/m-1/probe-results?outcome=bogus", nil)
+	req = withAuthedUser(req, "user-1")
+	req = withChiURLParam(req, "id", "m-1")
+	rec := httptest.NewRecorder()
+	h.listMonitorProbeResults(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestGetMonitorLatencySeriesHandler_ForeignMonitorReturns403(t *testing.T) {
+	fs := &fakeMonitorStore{
+		getMonitorFn: func(ctx context.Context, id, callerUserID string) (store.Monitor, error) {
+			return store.Monitor{}, errForbiddenForTest{}
+		},
+		latencySeriesByMonitorFn: func(context.Context, string, time.Time, int32) ([]store.LatencyBucket, error) {
+			t.Fatal("store must not be called when ownership check fails")
+			return nil, nil
+		},
+	}
+	h := newMonitorHandler(fs, testDeps(t))
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/monitors/m-1/latency", nil)
+	req = withAuthedUser(req, "user-2")
+	req = withChiURLParam(req, "id", "m-1")
+	rec := httptest.NewRecorder()
+	h.getMonitorLatencySeries(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+}
+
+func TestGetMonitorLatencySeriesHandler_WindowSelectsBucketWidth(t *testing.T) {
+	var gotBucketSeconds int32
+	var gotSince time.Time
+	fs := &fakeMonitorStore{
+		getMonitorFn: func(ctx context.Context, id, callerUserID string) (store.Monitor, error) {
+			return store.Monitor{ID: id, UserID: callerUserID}, nil
+		},
+		latencySeriesByMonitorFn: func(_ context.Context, monitorID string, since time.Time, bucketSeconds int32) ([]store.LatencyBucket, error) {
+			gotSince, gotBucketSeconds = since, bucketSeconds
+			return []store.LatencyBucket{{
+				BucketStart: since, P50: 10, P95: 20, Avg: 15, SampleCount: 4,
+			}}, nil
+		},
+	}
+	h := newMonitorHandler(fs, testDeps(t))
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/monitors/m-1/latency?window=7d", nil)
+	req = withAuthedUser(req, "user-1")
+	req = withChiURLParam(req, "id", "m-1")
+	rec := httptest.NewRecorder()
+	h.getMonitorLatencySeries(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if gotBucketSeconds != 60*60 {
+		t.Errorf("bucketSeconds = %d, want 3600 (1h buckets for 7d window)", gotBucketSeconds)
+	}
+	if time.Since(gotSince) < 6*24*time.Hour {
+		t.Errorf("since = %v, want roughly 7 days ago", gotSince)
+	}
+
+	var resp latencySeriesResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Window != "7d" || len(resp.Points) != 1 {
+		t.Fatalf("resp = %+v, want window=7d with 1 point", resp)
+	}
+}
+
+func TestGetMonitorLatencySeriesHandler_InvalidWindow400(t *testing.T) {
+	fs := &fakeMonitorStore{
+		getMonitorFn: func(ctx context.Context, id, callerUserID string) (store.Monitor, error) {
+			return store.Monitor{ID: id, UserID: callerUserID}, nil
+		},
+		latencySeriesByMonitorFn: func(context.Context, string, time.Time, int32) ([]store.LatencyBucket, error) {
+			t.Fatal("store must not be called on invalid window")
+			return nil, nil
+		},
+	}
+	h := newMonitorHandler(fs, testDeps(t))
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/monitors/m-1/latency?window=99y", nil)
+	req = withAuthedUser(req, "user-1")
+	req = withChiURLParam(req, "id", "m-1")
+	rec := httptest.NewRecorder()
+	h.getMonitorLatencySeries(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}

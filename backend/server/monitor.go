@@ -52,6 +52,9 @@ type monitorStore interface {
 	ListEventsByMonitor(ctx context.Context, monitorID, eventType, cursor string, limit int32) (store.EventPage, error)
 
 	ListCheckinsByMonitor(ctx context.Context, monitorID, cursor string, limit int32) (store.CheckinPage, error)
+
+	ListProbeResultsByMonitor(ctx context.Context, monitorID, outcome, cursor string, limit int32) (store.ProbeResultPage, error)
+	LatencySeriesByMonitor(ctx context.Context, monitorID string, since time.Time, bucketSeconds int32) ([]store.LatencyBucket, error)
 }
 
 type monitorHandler struct {

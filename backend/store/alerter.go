@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -32,6 +33,9 @@ type AlertJob struct {
 	// IsReminder is true for a periodic "still down" reminder row.
 	IsReminder bool
 	EventAt    time.Time
+	// TLSExpiresAt is set only for a "tls_expiry" alert, decoded from the
+	// triggering event's meta JSON (store/prober.go's tlsExpiryMeta).
+	TLSExpiresAt *time.Time
 	// Attempts is how many delivery attempts have already been made (0 on the
 	// first claim). The worker uses it to pick the backoff step and decide when
 	// retries are exhausted.
@@ -70,6 +74,7 @@ func (s *Store) ClaimDueAlerts(ctx context.Context, now time.Time, limit int32) 
 				IsReminder:   r.IsReminder,
 				EventAt:      r.EventCreatedAt.Time,
 				Attempts:     int(r.Attempts),
+				TLSExpiresAt: decodeTLSExpiresAt(r.EventMeta),
 			})
 		}
 		return nil
@@ -175,4 +180,21 @@ func (s *Store) EnqueueDownReminders(ctx context.Context, now time.Time) (int, e
 		return 0, err
 	}
 	return count, nil
+}
+
+// decodeTLSExpiresAt extracts tls_expires_at from a tls_expiry event's meta
+// JSON (store/prober.go's tlsExpiryMeta). Any other event's meta shape
+// (e.g. config_change's field list) simply fails to unmarshal into
+// tlsExpiryMeta and returns nil — this is only ever called for a job the
+// caller already knows is a tls_expiry alert in practice, but decoding
+// unconditionally keeps ClaimDueAlerts a single pass over the rows.
+func decodeTLSExpiresAt(meta []byte) *time.Time {
+	if len(meta) == 0 {
+		return nil
+	}
+	var m tlsExpiryMeta
+	if err := json.Unmarshal(meta, &m); err != nil || m.TLSExpiresAt.IsZero() {
+		return nil
+	}
+	return &m.TLSExpiresAt
 }

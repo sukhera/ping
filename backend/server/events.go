@@ -223,3 +223,136 @@ func (h *monitorHandler) listMonitorCheckins(w http.ResponseWriter, r *http.Requ
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
+
+// probeResultResponse is one probe log row (PING-018 DESIGN.md §7.2 HTTP
+// detail view).
+type probeResultResponse struct {
+	ID           int64      `json:"id"`
+	MonitorID    string     `json:"monitor_id"`
+	OK           bool       `json:"ok"`
+	HTTPStatus   *int32     `json:"http_status,omitempty"`
+	LatencyMS    *int32     `json:"latency_ms,omitempty"`
+	Error        string     `json:"error,omitempty"`
+	TLSExpiresAt *time.Time `json:"tls_expires_at,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+}
+
+type probeResultListResponse struct {
+	Results    []probeResultResponse `json:"results"`
+	NextCursor string                `json:"next_cursor,omitempty"`
+}
+
+func toProbeResultResponse(p store.ProbeResult) probeResultResponse {
+	return probeResultResponse{
+		ID:           p.ID,
+		MonitorID:    p.MonitorID,
+		OK:           p.OK,
+		HTTPStatus:   p.HTTPStatus,
+		LatencyMS:    p.LatencyMS,
+		Error:        p.Error,
+		TLSExpiresAt: p.TLSExpiresAt,
+		CreatedAt:    p.CreatedAt,
+	}
+}
+
+// listMonitorProbeResults is the HTTP monitor probe log (PING-018): ownership
+// via GetMonitor, cursor pagination, optional ?outcome=success|fail filter —
+// same shape as listMonitorCheckins.
+func (h *monitorHandler) listMonitorProbeResults(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if _, err := h.store.GetMonitor(r.Context(), id, userIDFromContext(r.Context())); err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	outcome := r.URL.Query().Get("outcome")
+	if outcome != "" && outcome != "success" && outcome != "fail" {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid outcome"})
+		return
+	}
+
+	limit, ok := eventPageLimit(w, r)
+	if !ok {
+		return
+	}
+	page, err := h.store.ListProbeResultsByMonitor(r.Context(), id, outcome, r.URL.Query().Get("cursor"), limit)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	resp := probeResultListResponse{
+		Results:    make([]probeResultResponse, len(page.Results)),
+		NextCursor: page.NextCursor,
+	}
+	for i, p := range page.Results {
+		resp.Results[i] = toProbeResultResponse(p)
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// latencyWindows maps the ?window query param to how far back to look and
+// what bucket width to aggregate at, so the point count stays chart-sized
+// regardless of window length (~288 points for 24h, ~168 for 7d, ~120 for
+// 30d).
+var latencyWindows = map[string]struct {
+	lookback time.Duration
+	bucket   int32
+}{
+	"24h": {24 * time.Hour, 5 * 60},
+	"7d":  {7 * 24 * time.Hour, 60 * 60},
+	"30d": {30 * 24 * time.Hour, 6 * 60 * 60},
+}
+
+type latencyPointResponse struct {
+	BucketStart time.Time `json:"bucket_start"`
+	P50         float64   `json:"p50"`
+	P95         float64   `json:"p95"`
+	Avg         float64   `json:"avg"`
+	SampleCount int64     `json:"sample_count"`
+}
+
+type latencySeriesResponse struct {
+	Window string                 `json:"window"`
+	Points []latencyPointResponse `json:"points"`
+}
+
+// getMonitorLatencySeries is the latency chart's backing endpoint (PING-018):
+// ?window=24h|7d|30d (default 24h), pre-bucketed p50/p95/avg per point.
+// Ownership via GetMonitor, same pattern as the other per-monitor feeds.
+func (h *monitorHandler) getMonitorLatencySeries(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if _, err := h.store.GetMonitor(r.Context(), id, userIDFromContext(r.Context())); err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	window := r.URL.Query().Get("window")
+	if window == "" {
+		window = "24h"
+	}
+	w24, ok := latencyWindows[window]
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid window"})
+		return
+	}
+
+	since := time.Now().Add(-w24.lookback)
+	buckets, err := h.store.LatencySeriesByMonitor(r.Context(), id, since, w24.bucket)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	resp := latencySeriesResponse{Window: window, Points: make([]latencyPointResponse, len(buckets))}
+	for i, b := range buckets {
+		resp.Points[i] = latencyPointResponse{
+			BucketStart: b.BucketStart,
+			P50:         b.P50,
+			P95:         b.P95,
+			Avg:         b.Avg,
+			SampleCount: b.SampleCount,
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
