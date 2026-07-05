@@ -81,18 +81,25 @@ func (q *Queries) ClaimDueMonitors(ctx context.Context, arg ClaimDueMonitorsPara
 
 const claimDueProbes = `-- name: ClaimDueProbes :many
 SELECT id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at, auto_resume, reminder_every_s FROM monitors
-WHERE next_probe_at < now()
+WHERE next_probe_at < $1
   AND kind = 'http'
   AND paused_at IS NULL
 ORDER BY next_probe_at
-LIMIT $1
+LIMIT $2
 FOR UPDATE SKIP LOCKED
 `
 
+type ClaimDueProbesParams struct {
+	Now       pgtype.Timestamptz `json:"now"`
+	PageLimit int32              `json:"page_limit"`
+}
+
 // Worker scan #2: prober claims http monitors due for their next probe.
 // Uses idx_monitors_probe_due (next_probe_at, partial WHERE kind = 'http' AND paused_at IS NULL).
-func (q *Queries) ClaimDueProbes(ctx context.Context, limit int32) ([]Monitor, error) {
-	rows, err := q.db.Query(ctx, claimDueProbes, limit)
+// The evaluation clock is passed in (sqlc.arg(now)), matching ClaimDueMonitors,
+// so tests can drive it deterministically instead of relying on wall-clock now().
+func (q *Queries) ClaimDueProbes(ctx context.Context, arg ClaimDueProbesParams) ([]Monitor, error) {
+	rows, err := q.db.Query(ctx, claimDueProbes, arg.Now, arg.PageLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -144,14 +151,15 @@ INSERT INTO monitors (
     user_id, kind, slug, name,
     schedule_kind, period_s, cron_expr, tz, grace_s,
     url, method, interval_s, timeout_s, fail_threshold, http_config,
-    auto_resume
+    auto_resume, next_probe_at
 ) VALUES (
     $1, $2, $3, $4,
     $5, $6, $7,
     COALESCE(NULLIF($8::text, ''), 'UTC'), $9,
     $10, $11, $12, $13, $14,
     COALESCE($15::jsonb, '{}'::jsonb),
-    COALESCE($16::boolean, true)
+    COALESCE($16::boolean, true),
+    CASE WHEN $2 = 'http' THEN now() ELSE NULL END
 )
 RETURNING id, user_id, kind, slug, name, schedule_kind, period_s, cron_expr, tz, grace_s, url, method, interval_s, timeout_s, fail_threshold, http_config, state, fail_streak, last_checkin_at, next_deadline, next_probe_at, alerts_muted, paused_at, created_at, updated_at, auto_resume, reminder_every_s
 `
@@ -175,6 +183,9 @@ type CreateMonitorParams struct {
 	AutoResume    pgtype.Bool `json:"auto_resume"`
 }
 
+// An http monitor is armed for its first probe immediately (next_probe_at =
+// now()); heartbeat monitors have no probe cadence and keep next_probe_at
+// NULL, matching next_deadline's NULL-until-relevant convention.
 func (q *Queries) CreateMonitor(ctx context.Context, arg CreateMonitorParams) (Monitor, error) {
 	row := q.db.QueryRow(ctx, createMonitor,
 		arg.UserID,

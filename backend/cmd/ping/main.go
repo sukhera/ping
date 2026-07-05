@@ -24,6 +24,7 @@ import (
 	"github.com/sukhera/ping/store"
 	"github.com/sukhera/ping/worker"
 	"github.com/sukhera/ping/worker/alerter"
+	"github.com/sukhera/ping/worker/prober"
 	"github.com/sukhera/ping/worker/scheduler"
 )
 
@@ -114,7 +115,9 @@ func run(role string) error {
 		g.Go(func() error {
 			return alerter.Run(ctx, st, emailChannel(cfg.SMTP), hb, alerter.DefaultInterval, cfg.BaseURL)
 		})
-		// The prober loop attaches here in a later ticket (M3).
+		g.Go(func() error {
+			return prober.Run(ctx, st, hb, prober.DefaultInterval, cfg.SSRFAllowlist)
+		})
 	}
 
 	return g.Wait()

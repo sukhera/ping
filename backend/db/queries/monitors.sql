@@ -1,16 +1,20 @@
+-- An http monitor is armed for its first probe immediately (next_probe_at =
+-- now()); heartbeat monitors have no probe cadence and keep next_probe_at
+-- NULL, matching next_deadline's NULL-until-relevant convention.
 -- name: CreateMonitor :one
 INSERT INTO monitors (
     user_id, kind, slug, name,
     schedule_kind, period_s, cron_expr, tz, grace_s,
     url, method, interval_s, timeout_s, fail_threshold, http_config,
-    auto_resume
+    auto_resume, next_probe_at
 ) VALUES (
     sqlc.arg(user_id), sqlc.arg(kind), sqlc.arg(slug), sqlc.arg(name),
     sqlc.narg(schedule_kind), sqlc.narg(period_s), sqlc.narg(cron_expr),
     COALESCE(NULLIF(sqlc.arg(tz)::text, ''), 'UTC'), sqlc.narg(grace_s),
     sqlc.narg(url), sqlc.narg(method), sqlc.narg(interval_s), sqlc.narg(timeout_s), sqlc.narg(fail_threshold),
     COALESCE(sqlc.narg(http_config)::jsonb, '{}'::jsonb),
-    COALESCE(sqlc.narg(auto_resume)::boolean, true)
+    COALESCE(sqlc.narg(auto_resume)::boolean, true),
+    CASE WHEN sqlc.arg(kind) = 'http' THEN now() ELSE NULL END
 )
 RETURNING *;
 
@@ -191,11 +195,13 @@ FOR UPDATE SKIP LOCKED;
 
 -- Worker scan #2: prober claims http monitors due for their next probe.
 -- Uses idx_monitors_probe_due (next_probe_at, partial WHERE kind = 'http' AND paused_at IS NULL).
+-- The evaluation clock is passed in (sqlc.arg(now)), matching ClaimDueMonitors,
+-- so tests can drive it deterministically instead of relying on wall-clock now().
 -- name: ClaimDueProbes :many
 SELECT * FROM monitors
-WHERE next_probe_at < now()
+WHERE next_probe_at < sqlc.arg(now)
   AND kind = 'http'
   AND paused_at IS NULL
 ORDER BY next_probe_at
-LIMIT $1
+LIMIT sqlc.arg(page_limit)
 FOR UPDATE SKIP LOCKED;
