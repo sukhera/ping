@@ -136,7 +136,7 @@ type Querier interface {
 	// what stops a monitor paused past its deadline from tripping late/down the
 	// instant it resumes (AC-2).
 	ResumeMonitor(ctx context.Context, arg ResumeMonitorParams) (Monitor, error)
-	RevokeAPIKey(ctx context.Context, arg RevokeAPIKeyParams) error
+	RevokeAPIKey(ctx context.Context, arg RevokeAPIKeyParams) (int64, error)
 	RevokeRefreshTokenFamily(ctx context.Context, familyID pgtype.UUID) error
 	// Atomically marks a token rotated only if it hasn't already been rotated or
 	// revoked, closing the check-then-write race between GetRefreshTokenByHash
