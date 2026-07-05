@@ -7,9 +7,13 @@ import type {
   DescribeScheduleResponse,
   EventListParams,
   EventListResponse,
+  LatencySeriesResponse,
+  LatencyWindow,
   Monitor,
   MonitorListParams,
   MonitorListResponse,
+  ProbeResultListParams,
+  ProbeResultListResponse,
   UpdateMonitorRequest,
 } from "@/types/monitor";
 
@@ -225,6 +229,31 @@ export async function listMonitorEvents(
   if (params.limit) qs.set("limit", String(params.limit));
   const suffix = qs.toString() ? `?${qs}` : "";
   return apiFetch<EventListResponse>(`/api/v1/monitors/${id}/events${suffix}`, {}, signal);
+}
+
+export async function listMonitorProbeResults(
+  id: string,
+  params: ProbeResultListParams = {},
+  signal?: AbortSignal,
+): Promise<ProbeResultListResponse> {
+  const qs = new URLSearchParams();
+  if (params.outcome) qs.set("outcome", params.outcome);
+  if (params.cursor) qs.set("cursor", params.cursor);
+  if (params.limit) qs.set("limit", String(params.limit));
+  const suffix = qs.toString() ? `?${qs}` : "";
+  return apiFetch<ProbeResultListResponse>(`/api/v1/monitors/${id}/probe-results${suffix}`, {}, signal);
+}
+
+export async function getMonitorLatencySeries(
+  id: string,
+  window: LatencyWindow,
+  signal?: AbortSignal,
+): Promise<LatencySeriesResponse> {
+  return apiFetch<LatencySeriesResponse>(
+    `/api/v1/monitors/${id}/latency?window=${window}`,
+    {},
+    signal,
+  );
 }
 
 export async function pauseMonitor(id: string): Promise<Monitor> {

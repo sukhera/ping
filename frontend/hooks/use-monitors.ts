@@ -4,8 +4,10 @@ import {
   createMonitor,
   describeSchedule,
   getMonitor,
+  getMonitorLatencySeries,
   listMonitorCheckins,
   listMonitorEvents,
+  listMonitorProbeResults,
   listMonitors,
   muteMonitor,
   pauseMonitor,
@@ -18,10 +20,12 @@ import type {
   CreateMonitorRequest,
   DescribeScheduleRequest,
   EventListParams,
+  LatencyWindow,
   Monitor,
   MonitorDisplayState,
   MonitorListParams,
   MonitorListResponse,
+  ProbeResultListParams,
   UpdateMonitorRequest,
 } from "@/types/monitor";
 
@@ -31,6 +35,9 @@ export const monitorKeys = {
   detail: (id: string) => ["monitors", "detail", id] as const,
   checkins: (id: string, params: CheckinListParams) => ["monitors", id, "checkins", params] as const,
   events: (id: string, params: EventListParams) => ["monitors", id, "events", params] as const,
+  probeResults: (id: string, params: ProbeResultListParams) =>
+    ["monitors", id, "probe-results", params] as const,
+  latency: (id: string, window: LatencyWindow) => ["monitors", id, "latency", window] as const,
 };
 
 /** Monitor detail page (PING-014): polls every 30s like the dashboard list. */
@@ -64,6 +71,34 @@ export function useMonitorEvents(id: string, params: EventListParams = {}) {
   return useQuery({
     queryKey: monitorKeys.events(id, params),
     queryFn: ({ signal }) => listMonitorEvents(id, params, signal),
+    placeholderData: (prev) => prev,
+  });
+}
+
+/**
+ * HTTP monitor probe log (PING-019), "load more"-paginated: same cursor
+ * pattern as useMonitorCheckins.
+ */
+export function useMonitorProbeResults(id: string, params: ProbeResultListParams = {}) {
+  const { limit, outcome } = params;
+  return useInfiniteQuery({
+    queryKey: monitorKeys.probeResults(id, { limit, outcome }),
+    queryFn: ({ pageParam, signal }) =>
+      listMonitorProbeResults(id, { limit, outcome, cursor: pageParam }, signal),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (lastPage) => lastPage.next_cursor || undefined,
+  });
+}
+
+/**
+ * Latency chart data (PING-019): re-fetches whenever the window toggle
+ * (24h/7d/30d) changes, since each window is a distinct pre-bucketed series
+ * from the backend, not a client-side slice of one big series.
+ */
+export function useMonitorLatency(id: string, window: LatencyWindow) {
+  return useQuery({
+    queryKey: monitorKeys.latency(id, window),
+    queryFn: ({ signal }) => getMonitorLatencySeries(id, window, signal),
     placeholderData: (prev) => prev,
   });
 }
