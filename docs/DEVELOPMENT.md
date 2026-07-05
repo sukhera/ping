@@ -73,7 +73,14 @@ Introduced in PING-002. Migrations live in `backend/db/migrations/` (golang-migr
 
 ## Time-warp testing
 
-Introduced alongside the `schedule` package (PING-006) and the scheduler worker (PING-009): deadline/grace-period math is tested by injecting a fake clock rather than sleeping in tests. Details land here once that package exists.
+Two distinct mechanisms, at two different layers:
+
+- **Unit/integration tests** (introduced with the `schedule` package, PING-006, and the scheduler worker, PING-009): deadline/grace-period math is tested by passing an explicit `now time.Time` into `store.EvaluateDueMonitors` and friends rather than sleeping — see `backend/store/scheduler_test.go`.
+- **E2E time-warp endpoint** (PING-022): Playwright specs run against a real running backend over HTTP, so there's no `*testing.T` to inject a clock into. `POST /test/advance-clock` (`backend/server/testclock.go`) fills that gap for black-box tests:
+  - Body: `{"seconds": <n>}`. Advances a process-wide skewed clock (`backend/internal/testclock`) and synchronously drives one settle-to-quiescence pass of the scheduler (looping `EvaluateDueMonitors` until a pass claims nothing, since each pass only crosses one threshold — up→late or late→down), then one prober pass, then one alerter pass — all using the new time. This makes it work identically whether or not `--role=worker` is also running (the e2e CI job runs `--role=api` only).
+  - **Compiled out of every binary not built with `-tags e2e`** (`go build -tags e2e ./cmd/ping`, or `make build-e2e`) — `backend/server/testclock_notag_test.go` asserts a 404 without the tag. Even in a tagged binary, the route only registers when `PING_ENV=test` (`Deps.Env`), mirroring the auth-rate-limit escape hatch below — belt and suspenders, never reachable in dev or production.
+  - Local manual e2e runs need the tagged binary: `make build-e2e` then run `backend/tmp/ping-api-e2e --role=api` with `PING_ENV=test PING_TEST_CLOCK=1 SSRF_ALLOWLIST=127.0.0.1/32,::1/128` (the allowlist is only needed for `http-monitor-lifecycle.spec.ts`, which probes a mock target on loopback — the SSRF guard blocks loopback by default). `frontend/e2e/README.md` has the full command.
+  - Heartbeat and HTTP monitor minimums apply here too: `grace_s`/`period_s` floor is 1 minute (`schedule.MinGrace`/`MinPeriod`), `interval_s` floor is 30s — specs advance the clock by whole multiples of those, not arbitrary small numbers.
 
 ## E2E auth rate limit (read before adding a Playwright spec)
 

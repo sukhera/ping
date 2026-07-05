@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rsa"
 	"net/http"
+	"net/netip"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -31,6 +32,15 @@ type Deps struct {
 	// BaseURL is the externally reachable API origin (PING_BASE_URL), used to
 	// build full ping URLs (e.g. "<BaseURL>/p/<slug>") returned to clients.
 	BaseURL string
+
+	// Env is the process environment (PING_ENV: "development"|"test"|"production").
+	// Used to runtime-gate test-only surfaces (e.g. the e2e time-warp endpoint)
+	// in addition to their compile-time build tag — belt and suspenders.
+	Env string
+
+	// SSRFAllowlist mirrors config.Config.SSRFAllowlist; only used to drive the
+	// prober from the e2e-only /test/advance-clock endpoint (backend/server/testclock.go).
+	SSRFAllowlist []netip.Prefix
 
 	JWTPrivateKey    *rsa.PrivateKey
 	JWTPublicKey     *rsa.PublicKey
@@ -65,6 +75,13 @@ func New(addr string, deps Deps) *http.Server {
 	r.Get("/health", healthHandler(deps))
 
 	st := store.New(deps.DB, deps.Redis)
+
+	// Test-only time-warp endpoint (PING-022): registerTestRoutes is a no-op
+	// unless this binary was built with `-tags e2e` (see testclock_e2e.go /
+	// testclock_notag.go) AND deps.Env == "test" — both the build tag and the
+	// runtime check must hold, so an e2e-tagged binary accidentally deployed
+	// anywhere but the test environment still exposes nothing extra.
+	registerTestRoutes(r, st, deps)
 
 	ah := newAuthHandler(st, deps)
 	r.Route("/api/v1/auth", func(r chi.Router) {

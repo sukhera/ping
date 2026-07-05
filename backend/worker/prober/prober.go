@@ -9,6 +9,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/sukhera/ping/internal/testclock"
 	"github.com/sukhera/ping/store"
 	"github.com/sukhera/ping/worker"
 )
@@ -63,6 +64,15 @@ func Run(ctx context.Context, st Store, hb *worker.Heartbeat, interval time.Dura
 	return New(st, allowlist).run(ctx, hb, interval)
 }
 
+// RunOnce performs a single claim-and-probe pass outside the loop's own
+// ticking — used by the e2e-only /test/advance-clock endpoint
+// (backend/server/testclock.go) so a time-warp takes effect immediately
+// without waiting for the next interval, and works identically whether or not
+// the worker role is running.
+func RunOnce(ctx context.Context, st Store, allowlist []netip.Prefix) error {
+	return New(st, allowlist).tick(ctx)
+}
+
 func (p *Prober) run(ctx context.Context, hb *worker.Heartbeat, interval time.Duration) error {
 	return worker.Run(ctx, worker.Config{
 		Name:     "prober",
@@ -79,7 +89,7 @@ func (p *Prober) run(ctx context.Context, hb *worker.Heartbeat, interval time.Du
 // probe/record failure is logged and does not fail the tick — matching the
 // scheduler and alerter's per-item isolation.
 func (p *Prober) tick(ctx context.Context) error {
-	monitors, err := p.st.ClaimDueProbes(ctx, time.Now(), claimLimit)
+	monitors, err := p.st.ClaimDueProbes(ctx, testclock.Now(), claimLimit)
 	if err != nil {
 		return err
 	}
@@ -126,7 +136,7 @@ func (p *Prober) probeOne(ctx context.Context, m store.Monitor) {
 	result := runProbe(probeCtx, client, method, m.URL, cfg)
 
 	intervalS := int32Or(m.IntervalS, 60)
-	now := time.Now()
+	now := testclock.Now()
 	outcome := store.ProbeOutcome{
 		MonitorID:               m.ID,
 		OK:                      result.OK,

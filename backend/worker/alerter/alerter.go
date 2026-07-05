@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sukhera/ping/alert"
+	"github.com/sukhera/ping/internal/testclock"
 	"github.com/sukhera/ping/store"
 	"github.com/sukhera/ping/worker"
 )
@@ -88,10 +89,18 @@ func (a *Alerter) run(ctx context.Context, hb *worker.Heartbeat, interval time.D
 	})
 }
 
+// RunOnce performs a single dispatch pass outside the loop's own ticking —
+// used by the e2e-only /test/advance-clock endpoint (backend/server/testclock.go)
+// so a time-warp takes effect immediately without waiting for the next
+// interval, and works identically whether or not the worker role is running.
+func RunOnce(ctx context.Context, st Store, ch alert.Channel, baseURL string) error {
+	return New(st, ch, baseURL).tick(ctx)
+}
+
 // tick does one dispatch pass: enqueue due reminders, claim due alerts, deliver
 // each. A per-alert failure is logged and skipped, never fatal to the loop.
 func (a *Alerter) tick(ctx context.Context) error {
-	if n, err := a.st.EnqueueDownReminders(ctx, time.Now()); err != nil {
+	if n, err := a.st.EnqueueDownReminders(ctx, testclock.Now()); err != nil {
 		// A reminder-enqueue failure must not block dispatching already-pending
 		// alerts, so log and continue rather than returning.
 		slog.WarnContext(ctx, "alerter: enqueue reminders failed", "error", err)
@@ -99,7 +108,7 @@ func (a *Alerter) tick(ctx context.Context) error {
 		slog.InfoContext(ctx, "alerter reminders queued", "count", n)
 	}
 
-	jobs, err := a.st.ClaimDueAlerts(ctx, time.Now(), claimLimit)
+	jobs, err := a.st.ClaimDueAlerts(ctx, testclock.Now(), claimLimit)
 	if err != nil {
 		return err
 	}
@@ -159,7 +168,7 @@ func (a *Alerter) dispatch(ctx context.Context, job store.AlertJob) {
 	nextAttempt := job.Attempts + 1
 	if alert.IsRetryable(sendErr) && nextAttempt < maxAttempts {
 		delay := backoff(job.Attempts)
-		if err := a.st.RescheduleAlert(ctx, job.ID, time.Now().Add(delay)); err != nil {
+		if err := a.st.RescheduleAlert(ctx, job.ID, testclock.Now().Add(delay)); err != nil {
 			log.WarnContext(ctx, "alerter: reschedule failed", "error", err)
 			return
 		}
@@ -196,7 +205,7 @@ func (a *Alerter) render(ctx context.Context, job store.AlertJob) (alert.Message
 		// IsReminder flag, not the event type. "Still down for X" is measured
 		// from that down event up to now.
 		n.Kind = alert.KindReminder
-		d, err := a.st.ResolveDowntime(ctx, job.MonitorID, time.Now())
+		d, err := a.st.ResolveDowntime(ctx, job.MonitorID, testclock.Now())
 		if err != nil {
 			return alert.Message{}, fmt.Errorf("resolve downtime: %w", err)
 		}

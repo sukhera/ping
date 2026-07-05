@@ -80,6 +80,8 @@ func run(role string) error {
 			Redis:            redisClient,
 			AllowedOrigin:    cfg.CORSAllowedOrigin,
 			BaseURL:          cfg.BaseURL,
+			Env:              cfg.Env,
+			SSRFAllowlist:    cfg.SSRFAllowlist,
 			JWTPrivateKey:    jwtPriv,
 			JWTPublicKey:     jwtPub,
 			JWTAccessTTL:     cfg.JWTAccessTTL,

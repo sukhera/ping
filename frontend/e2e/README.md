@@ -24,3 +24,16 @@ npm run e2e
 ```
 
 Tests self-register a unique timestamped email per run (`REGISTRATION_OPEN=true` is the `.env.example` default and there is no seed script — see `docs/DEVELOPMENT.md`).
+
+## Time-warp specs (heartbeat-lifecycle, http-monitor-lifecycle)
+
+These two specs call `POST /test/advance-clock` to cross real heartbeat grace deadlines and HTTP probe intervals instantly. That endpoint only exists in a backend built with `-tags e2e`, so `make dev`'s plain binary won't serve it — build and run the tagged binary instead of step 3 above:
+
+```
+make build-e2e
+cd backend && PING_ENV=test PING_TEST_CLOCK=1 SSRF_ALLOWLIST=127.0.0.1/32,::1/128 ./tmp/ping-api-e2e --role=api
+```
+
+`SSRF_ALLOWLIST` is only needed for `http-monitor-lifecycle.spec.ts`, which points an HTTP monitor at a mock target the test spins up on `127.0.0.1` — the SSRF guard (`backend/worker/prober/probe.go`) blocks loopback by default, so without the allowlist every probe against it fails as "blocked" rather than exercising a real down/up transition.
+
+See `docs/DEVELOPMENT.md`'s "Time-warp testing" section for how the endpoint works and why it's gated the way it is.
