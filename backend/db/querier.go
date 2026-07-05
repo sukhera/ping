@@ -27,9 +27,14 @@ type Querier interface {
 	ClaimDueMonitors(ctx context.Context, arg ClaimDueMonitorsParams) ([]Monitor, error)
 	// Worker scan #2: prober claims http monitors due for their next probe.
 	// Uses idx_monitors_probe_due (next_probe_at, partial WHERE kind = 'http' AND paused_at IS NULL).
-	ClaimDueProbes(ctx context.Context, limit int32) ([]Monitor, error)
+	// The evaluation clock is passed in (sqlc.arg(now)), matching ClaimDueMonitors,
+	// so tests can drive it deterministically instead of relying on wall-clock now().
+	ClaimDueProbes(ctx context.Context, arg ClaimDueProbesParams) ([]Monitor, error)
 	CountUsers(ctx context.Context) (int64, error)
 	CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (ApiKey, error)
+	// An http monitor is armed for its first probe immediately (next_probe_at =
+	// now()); heartbeat monitors have no probe cadence and keep next_probe_at
+	// NULL, matching next_deadline's NULL-until-relevant convention.
 	CreateMonitor(ctx context.Context, arg CreateMonitorParams) (Monitor, error)
 	CreateRefreshToken(ctx context.Context, arg CreateRefreshTokenParams) (RefreshToken, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
@@ -69,6 +74,10 @@ type Querier interface {
 	// Timeline events for a monitor (state transitions, config changes, etc.).
 	// meta defaults to an empty object when the caller passes NULL.
 	InsertEvent(ctx context.Context, arg InsertEventParams) (Event, error)
+	// Prober (PING-017): one row per HTTP probe attempt. tls_expires_at is
+	// populated for https targets so PING-018 can add expiry-warning logic on
+	// top without another migration; it is NULL for http or on a failed probe.
+	InsertProbeResult(ctx context.Context, arg InsertProbeResultParams) (ProbeResult, error)
 	// LatestDownEventBefore finds the most recent 'down' event for a monitor at or
 	// before a given time — the start of the current outage. The alerter uses it to
 	// compute recovery downtime ("recovered after 42m") for an 'up' alert.
@@ -166,6 +175,14 @@ type Querier interface {
 	// it (its claims filter paused_at IS NULL), so the future deadline is inert
 	// until the monitor is explicitly resumed.
 	UpdateMonitorOnCheckin(ctx context.Context, arg UpdateMonitorOnCheckinParams) error
+	// Prober (PING-017): apply one probe's outcome to its monitor. fail_streak
+	// and state are computed by the caller (store/prober.go) per the
+	// confirmation-threshold logic (PRD F2.2): a single failure only increments
+	// the streak, state flips to 'down' once the streak reaches fail_threshold; a
+	// success always resets the streak to 0 and flips to 'up'. next_probe_at is
+	// always re-armed to now + interval_s (computed by the caller) regardless of
+	// outcome, so a failing target keeps being probed on its normal cadence.
+	UpdateMonitorOnProbe(ctx context.Context, arg UpdateMonitorOnProbeParams) error
 }
 
 var _ Querier = (*Queries)(nil)

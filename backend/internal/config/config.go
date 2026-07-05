@@ -4,8 +4,10 @@ package config
 
 import (
 	"fmt"
+	"net/netip"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -24,6 +26,12 @@ type Config struct {
 	RegistrationOpen  bool
 
 	SMTP SMTPConfig
+
+	// SSRFAllowlist is the prober's dial-time SSRF guard override (PING-017):
+	// CIDR prefixes that bypass the private/loopback/link-local/metadata
+	// block, for self-hosters genuinely monitoring internal targets. Empty
+	// means the guard is fully enforced.
+	SSRFAllowlist []netip.Prefix
 }
 
 // SMTPConfig holds outbound email settings. It is optional: a fresh install
@@ -118,7 +126,38 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
+	cfg.SSRFAllowlist, err = parseAllowlist(os.Getenv("SSRF_ALLOWLIST"))
+	if err != nil {
+		return Config{}, err
+	}
+
 	return cfg, nil
+}
+
+// parseAllowlist parses a comma-separated list of CIDR prefixes or bare IPs
+// (treated as a /32 or /128) from SSRF_ALLOWLIST. Empty input yields an empty
+// (fully-enforced) allowlist.
+func parseAllowlist(v string) ([]netip.Prefix, error) {
+	if v == "" {
+		return nil, nil
+	}
+	var prefixes []netip.Prefix
+	for entry := range strings.SplitSeq(v, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		if prefix, err := netip.ParsePrefix(entry); err == nil {
+			prefixes = append(prefixes, prefix)
+			continue
+		}
+		addr, err := netip.ParseAddr(entry)
+		if err != nil {
+			return nil, fmt.Errorf("config: SSRF_ALLOWLIST entry %q is not a valid IP or CIDR", entry)
+		}
+		prefixes = append(prefixes, netip.PrefixFrom(addr, addr.BitLen()))
+	}
+	return prefixes, nil
 }
 
 func require(name string) (string, error) {
