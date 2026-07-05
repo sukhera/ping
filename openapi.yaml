@@ -1,0 +1,1057 @@
+openapi: 3.1.0
+info:
+  title: ping API
+  version: "1.0.0"
+  description: |
+    Self-hostable cron-job + uptime monitor API. Covers three credential
+    surfaces: unauthenticated ping ingestion (`/p/{slug}/...`), JWT-authenticated
+    session endpoints (`/api/v1/auth/*`, `/api/v1/apikeys/*`), and the
+    management API which accepts either a JWT access token or a long-lived
+    API key (`Authorization: Bearer pk_...`).
+
+    All error responses share one envelope: `{"error": "message"}`, except
+    field-level validation failures (`422`) which add a `field` name.
+  license:
+    name: MIT
+servers:
+  - url: http://localhost:8080
+    description: Local dev (make dev)
+  - url: "{baseUrl}"
+    description: Self-hosted deployment
+    variables:
+      baseUrl:
+        default: http://localhost:8080
+
+tags:
+  - name: health
+    description: Liveness/readiness probe for Postgres, Redis, and worker heartbeats.
+  - name: auth
+    description: Email/password registration and login, JWT access tokens, httpOnly refresh cookie rotation.
+  - name: ping-ingestion
+    description: Public, unauthenticated check-in endpoints a monitored job hits to report success/failure.
+  - name: monitors
+    description: Monitor CRUD and lifecycle actions (pause/resume/mute/unmute). Accepts JWT or API key.
+  - name: schedule
+    description: Schedule preview (human-readable description + next occurrences) without persisting anything.
+  - name: events
+    description: Immutable per-account and per-monitor timeline of state transitions and config changes.
+  - name: checkins
+    description: Raw check-in log per monitor.
+  - name: probe-results
+    description: HTTP monitor probe attempt log and pre-bucketed latency series.
+  - name: alerting
+    description: Send a verification email through the configured SMTP channel.
+  - name: api-keys
+    description: Long-lived API key management for scripting the monitor API. JWT session required.
+
+security: []
+
+paths:
+  /health:
+    get:
+      tags: [health]
+      operationId: getHealth
+      summary: Liveness/readiness probe
+      description: |
+        Reports Postgres, Redis, and worker heartbeat freshness (scheduler,
+        prober, alerter). A missing worker heartbeat is `unknown` and does not
+        degrade overall status; a present-but-stale heartbeat is `down` and
+        does degrade it. Redis being unreachable never degrades overall status
+        (rate limiting/caching fail open) but is still reported.
+      security: []
+      responses:
+        "200":
+          description: All required components healthy
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HealthResponse" }
+        "503":
+          description: A required component (Postgres, or a stale worker heartbeat) is unhealthy
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HealthResponse" }
+
+  /api/v1/auth/register:
+    post:
+      tags: [auth]
+      operationId: registerUser
+      summary: Create an account
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EmailPasswordRequest" }
+      responses:
+        "201":
+          description: Account created; access token returned, refresh token set as httpOnly cookie
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+              description: "ping_refresh=<token>; Path=/api/v1/auth; HttpOnly; SameSite=Lax"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403":
+          description: Registration is closed (`REGISTRATION_OPEN=false`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "409":
+          description: Email already registered
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "422":
+          description: Invalid email, or password shorter than 12 characters
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/v1/auth/login:
+    post:
+      tags: [auth]
+      operationId: login
+      summary: Log in
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EmailPasswordRequest" }
+      responses:
+        "200":
+          description: Authenticated; access token returned, refresh token set as httpOnly cookie
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401":
+          description: Invalid email or password
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/v1/auth/refresh:
+    post:
+      tags: [auth]
+      operationId: refreshToken
+      summary: Rotate the refresh token and mint a new access token
+      description: |
+        Reads the `ping_refresh` httpOnly cookie. Refresh tokens rotate on
+        every use; reuse of an already-rotated token revokes the entire token
+        family (all sessions for that lineage), matching a stolen-cookie
+        detection strategy.
+      security: []
+      responses:
+        "200":
+          description: New access token issued; refresh cookie replaced. Note `user.email` is omitted on this response (only `user.id` is set) — only login/register populate it.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RefreshResponse" }
+        "401":
+          description: Missing, invalid, expired, or reused refresh token
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /api/v1/auth/logout:
+    post:
+      tags: [auth]
+      operationId: logout
+      summary: Revoke the current session's refresh token family
+      security: []
+      responses:
+        "200":
+          description: Always succeeds; refresh cookie cleared regardless of whether one was present
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+
+  /p/{slug}:
+    parameters:
+      - $ref: "#/components/parameters/PingSlug"
+    get:
+      tags: [ping-ingestion]
+      operationId: pingSuccessGet
+      summary: Record a successful check-in (GET)
+      security: []
+      description: &pingDescription |
+        Unauthenticated — the 16-character slug in the URL is the credential.
+        Accepts GET, POST, and HEAD identically. Always returns a tiny `200`,
+        even for an unknown slug (anti-enumeration: nothing is recorded, but
+        the response is indistinguishable from a real check-in) or an
+        internal failure (logged server-side, never surfaced to the caller,
+        so a cron job never retry-storms). Body is captured verbatim up to
+        10 KB and truncated beyond that; HEAD requests carry no body.
+      responses:
+        "200": { $ref: "#/components/responses/PingOK" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+    post:
+      tags: [ping-ingestion]
+      operationId: pingSuccessPost
+      summary: Record a successful check-in (POST)
+      security: []
+      description: *pingDescription
+      responses:
+        "200": { $ref: "#/components/responses/PingOK" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+    head:
+      tags: [ping-ingestion]
+      operationId: pingSuccessHead
+      summary: Record a successful check-in (HEAD, no response body)
+      security: []
+      description: *pingDescription
+      responses:
+        "200": { $ref: "#/components/responses/PingOK" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /p/{slug}/start:
+    parameters:
+      - $ref: "#/components/parameters/PingSlug"
+    get:
+      tags: [ping-ingestion]
+      operationId: pingStartGet
+      summary: Record a "job started" check-in (GET, no state change)
+      security: []
+      description: *pingDescription
+      responses:
+        "200": { $ref: "#/components/responses/PingOK" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+    post:
+      tags: [ping-ingestion]
+      operationId: pingStartPost
+      summary: Record a "job started" check-in (POST, no state change)
+      security: []
+      description: *pingDescription
+      responses:
+        "200": { $ref: "#/components/responses/PingOK" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+    head:
+      tags: [ping-ingestion]
+      operationId: pingStartHead
+      summary: Record a "job started" check-in (HEAD, no state change)
+      security: []
+      description: *pingDescription
+      responses:
+        "200": { $ref: "#/components/responses/PingOK" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /p/{slug}/fail:
+    parameters:
+      - $ref: "#/components/parameters/PingSlug"
+    get:
+      tags: [ping-ingestion]
+      operationId: pingFailGet
+      summary: Record an explicit failure (GET, state → down immediately)
+      security: []
+      description: *pingDescription
+      responses:
+        "200": { $ref: "#/components/responses/PingOK" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+    post:
+      tags: [ping-ingestion]
+      operationId: pingFailPost
+      summary: Record an explicit failure (POST, state → down immediately)
+      security: []
+      description: *pingDescription
+      responses:
+        "200": { $ref: "#/components/responses/PingOK" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+    head:
+      tags: [ping-ingestion]
+      operationId: pingFailHead
+      summary: Record an explicit failure (HEAD, state → down immediately)
+      security: []
+      description: *pingDescription
+      responses:
+        "200": { $ref: "#/components/responses/PingOK" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /p/{slug}/{code}:
+    parameters:
+      - $ref: "#/components/parameters/PingSlug"
+      - name: code
+        in: path
+        required: true
+        description: Numeric exit code. `0` is success; any non-zero value is a failure. A non-numeric value falls through to success.
+        schema: { type: string, example: "1" }
+    get:
+      tags: [ping-ingestion]
+      operationId: pingExitCodeGet
+      summary: Record a check-in by shell exit code (GET)
+      security: []
+      description: *pingDescription
+      responses:
+        "200": { $ref: "#/components/responses/PingOK" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+    post:
+      tags: [ping-ingestion]
+      operationId: pingExitCodePost
+      summary: Record a check-in by shell exit code (POST)
+      security: []
+      description: *pingDescription
+      responses:
+        "200": { $ref: "#/components/responses/PingOK" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+    head:
+      tags: [ping-ingestion]
+      operationId: pingExitCodeHead
+      summary: Record a check-in by shell exit code (HEAD)
+      security: []
+      description: *pingDescription
+      responses:
+        "200": { $ref: "#/components/responses/PingOK" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/v1/schedule/describe:
+    post:
+      tags: [schedule]
+      operationId: describeSchedule
+      summary: Preview a human-readable schedule description and next occurrences
+      security: [{ bearerAuth: [], apiKeyAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ScheduleFields" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DescribeResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/FieldValidation" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/v1/alerting/test:
+    post:
+      tags: [alerting]
+      operationId: sendTestAlert
+      summary: Send a test email to the caller's own account address
+      security: [{ bearerAuth: [], apiKeyAuth: [] }]
+      responses:
+        "200":
+          description: Delivered
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  delivered_to: { type: string, format: email }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502":
+          description: SMTP server permanently rejected the message (check credentials)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "503":
+          description: SMTP is not configured, or the mail server was temporarily unavailable
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /api/v1/events:
+    get:
+      tags: [events]
+      operationId: listEvents
+      summary: Global event feed across all the caller's monitors
+      security: [{ bearerAuth: [], apiKeyAuth: [] }]
+      parameters:
+        - name: monitor
+          in: query
+          schema: { type: string, format: uuid }
+          description: Filter to one monitor's events
+        - $ref: "#/components/parameters/EventType"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EventListResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/v1/monitors:
+    post:
+      tags: [monitors]
+      operationId: createMonitor
+      summary: Create a monitor
+      security: [{ bearerAuth: [], apiKeyAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateMonitorRequest" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Monitor" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/FieldValidation" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+    get:
+      tags: [monitors]
+      operationId: listMonitors
+      summary: List the caller's monitors
+      security: [{ bearerAuth: [], apiKeyAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+        - name: q
+          in: query
+          schema: { type: string }
+          description: Free-text search over monitor name
+        - name: kind
+          in: query
+          schema: { type: string, enum: [heartbeat, http] }
+        - name: state
+          in: query
+          schema: { type: string, enum: [up, down, late, new, paused] }
+          description: Filters on display_state
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MonitorListResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/v1/monitors/{id}:
+    parameters:
+      - $ref: "#/components/parameters/MonitorId"
+    get:
+      tags: [monitors]
+      operationId: getMonitor
+      summary: Get one monitor, including its 90-day daily_stats window
+      security: [{ bearerAuth: [], apiKeyAuth: [] }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Monitor" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+    patch:
+      tags: [monitors]
+      operationId: updateMonitor
+      summary: Partially update a monitor
+      description: Only fields present in the body are changed. Schedule fields are only valid on heartbeat monitors; URL/HTTP fields only on http monitors — `kind` itself is immutable.
+      security: [{ bearerAuth: [], apiKeyAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateMonitorRequest" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Monitor" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/FieldValidation" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+    delete:
+      tags: [monitors]
+      operationId: deleteMonitor
+      summary: Delete a monitor
+      security: [{ bearerAuth: [], apiKeyAuth: [] }]
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/v1/monitors/{id}/pause:
+    parameters: [{ $ref: "#/components/parameters/MonitorId" }]
+    post:
+      tags: [monitors]
+      operationId: pauseMonitor
+      summary: Pause a monitor
+      description: Sets the paused flag only — `state` is untouched, `display_state` becomes `paused`. The scheduler stops evaluating it while paused; check-ins still record.
+      security: [{ bearerAuth: [], apiKeyAuth: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/MonitorOK" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/v1/monitors/{id}/resume:
+    parameters: [{ $ref: "#/components/parameters/MonitorId" }]
+    post:
+      tags: [monitors]
+      operationId: resumeMonitor
+      summary: Resume a paused monitor
+      description: Clears the paused flag, sets state to up, and re-arms next_deadline from now, so a monitor paused past its old deadline does not trip immediately.
+      security: [{ bearerAuth: [], apiKeyAuth: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/MonitorOK" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/v1/monitors/{id}/mute:
+    parameters: [{ $ref: "#/components/parameters/MonitorId" }]
+    post:
+      tags: [monitors]
+      operationId: muteMonitor
+      summary: Mute alerts for a monitor
+      security: [{ bearerAuth: [], apiKeyAuth: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/MonitorOK" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/v1/monitors/{id}/unmute:
+    parameters: [{ $ref: "#/components/parameters/MonitorId" }]
+    post:
+      tags: [monitors]
+      operationId: unmuteMonitor
+      summary: Unmute alerts for a monitor
+      security: [{ bearerAuth: [], apiKeyAuth: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/MonitorOK" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/v1/monitors/{id}/events:
+    parameters: [{ $ref: "#/components/parameters/MonitorId" }]
+    get:
+      tags: [events]
+      operationId: listMonitorEvents
+      summary: One monitor's event feed
+      security: [{ bearerAuth: [], apiKeyAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/EventType"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EventListResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/v1/monitors/{id}/checkins:
+    parameters: [{ $ref: "#/components/parameters/MonitorId" }]
+    get:
+      tags: [checkins]
+      operationId: listMonitorCheckins
+      summary: One monitor's raw check-in log
+      security: [{ bearerAuth: [], apiKeyAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CheckinListResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/v1/monitors/{id}/probe-results:
+    parameters: [{ $ref: "#/components/parameters/MonitorId" }]
+    get:
+      tags: [probe-results]
+      operationId: listMonitorProbeResults
+      summary: One HTTP monitor's probe attempt log
+      security: [{ bearerAuth: [], apiKeyAuth: [] }]
+      parameters:
+        - name: outcome
+          in: query
+          schema: { type: string, enum: [success, fail] }
+          description: Omit for all outcomes
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProbeResultListResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/v1/monitors/{id}/latency:
+    parameters: [{ $ref: "#/components/parameters/MonitorId" }]
+    get:
+      tags: [probe-results]
+      operationId: getMonitorLatency
+      summary: Pre-bucketed latency series for the detail-page chart
+      description: Bucket width is chosen server-side per window (5m for 24h, 1h for 7d, 6h for 30d) so point count stays chart-sized. Only successful probes contribute.
+      security: [{ bearerAuth: [], apiKeyAuth: [] }]
+      parameters:
+        - name: window
+          in: query
+          schema: { type: string, enum: ["24h", "7d", "30d"], default: "24h" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LatencySeriesResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/v1/apikeys:
+    post:
+      tags: [api-keys]
+      operationId: createAPIKey
+      summary: Create an API key
+      description: JWT session required — a leaked key can never mint or revoke other keys for the account. The plaintext key is returned exactly once.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [label]
+              properties:
+                label: { type: string, maxLength: 100 }
+      responses:
+        "201":
+          description: Created — `key` is shown only in this response
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CreatedAPIKey" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/FieldValidation" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+    get:
+      tags: [api-keys]
+      operationId: listAPIKeys
+      summary: List the caller's API keys
+      description: Newest first. Revoked keys stay listed with revoked_at set (audit trail). Never includes the hash or plaintext.
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/APIKey" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/v1/apikeys/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    delete:
+      tags: [api-keys]
+      operationId: revokeAPIKey
+      summary: Revoke an API key
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: Revoked }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        RS256 access token from /api/v1/auth/login (or /register, /refresh).
+        Claims: sub (user id), jti, iat, exp, iss=ping, aud=[ping-api].
+        Short-lived (JWT_ACCESS_TTL env, default 15m). The companion refresh
+        token is a separate opaque secret delivered only via the httpOnly
+        ping_refresh cookie, never in a JSON body.
+    apiKeyAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: "pk_<64 hex chars>"
+      description: Long-lived API key from POST /api/v1/apikeys. Accepted on the management API only, not on /api/v1/apikeys/* itself.
+
+  parameters:
+    PingSlug:
+      name: slug
+      in: path
+      required: true
+      schema: { type: string, example: "a1b2c3d4e5f6g7h8" }
+      description: 16-character random slug identifying the monitor. Unknown slugs still return 200 (anti-enumeration).
+    MonitorId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    EventType:
+      name: type
+      in: query
+      schema:
+        type: string
+        enum: [up, late, down, pause, resume, mute, unmute, config_change, tls_expiry]
+    Cursor:
+      name: cursor
+      in: query
+      schema: { type: string }
+      description: Opaque pagination cursor from a previous response's next_cursor.
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+
+  responses:
+    PingOK:
+      description: Always 200, even for an unknown slug or an internal failure. HEAD responses carry no body.
+      content:
+        text/plain:
+          schema: { type: string, example: "OK" }
+    MonitorOK:
+      description: OK — updated monitor
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Monitor" }
+    BadRequest:
+      description: Malformed request body or query parameter
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    Unauthorized:
+      description: Missing, invalid, or expired credential
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    Forbidden:
+      description: Resource exists but is owned by a different account
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    NotFound:
+      description: Resource does not exist
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    FieldValidation:
+      description: Field-level validation failure
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/FieldErrorResponse" }
+    RateLimited:
+      description: Rate limit exceeded
+      headers:
+        Retry-After:
+          schema: { type: integer }
+          description: Seconds until the caller may retry
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        error: { type: string }
+      required: [error]
+
+    FieldErrorResponse:
+      type: object
+      properties:
+        error: { type: string }
+        field: { type: string, description: "Name of the offending request field" }
+      required: [error, field]
+
+    HealthResponse:
+      type: object
+      properties:
+        status: { type: string, enum: [ok, degraded] }
+        components:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              status: { type: string, enum: [up, down, unknown] }
+              error: { type: string }
+            required: [status]
+      required: [status, components]
+
+    EmailPasswordRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, minLength: 12, description: "12+ characters, enforced on register/login body validation" }
+
+    AuthResponse:
+      type: object
+      properties:
+        access_token: { type: string }
+        user:
+          type: object
+          properties:
+            id: { type: string, format: uuid }
+            email: { type: string, format: email }
+      required: [access_token, user]
+
+    RefreshResponse:
+      type: object
+      description: Same envelope as AuthResponse, but user.email is always omitted.
+      properties:
+        access_token: { type: string }
+        user:
+          type: object
+          properties:
+            id: { type: string, format: uuid }
+      required: [access_token, user]
+
+    ScheduleFields:
+      type: object
+      description: Present on monitor create/update requests (heartbeat kind only) and the describe-preview request.
+      properties:
+        schedule_kind: { type: string, enum: [period, cron] }
+        period_s: { type: integer, description: "Required when schedule_kind=period" }
+        cron_expr: { type: string, description: "Required when schedule_kind=cron" }
+        tz: { type: string, example: "UTC", description: "IANA timezone name" }
+        grace_s: { type: integer, description: "Grace period after the deadline before state flips to down" }
+
+    HTTPFields:
+      type: object
+      description: Present on monitor create/update requests (http kind only).
+      properties:
+        url: { type: string, format: uri }
+        method: { type: string, enum: [GET, HEAD], default: GET }
+        interval_s: { type: integer, minimum: 30, maximum: 86400 }
+        timeout_s: { type: integer, minimum: 1, maximum: 30 }
+        fail_threshold: { type: integer, description: "Consecutive failures required before state flips to down" }
+        http_config:
+          description: Advanced JSONB config (headers, keyword match, redirect policy) — validated only as well-formed JSON here; the prober is the schema's sole interpreter.
+
+    CreateMonitorRequest:
+      allOf:
+        - type: object
+          required: [kind, name]
+          properties:
+            kind: { type: string, enum: [heartbeat, http] }
+            name: { type: string, minLength: 1 }
+            auto_resume: { type: boolean, default: true }
+        - $ref: "#/components/schemas/ScheduleFields"
+        - $ref: "#/components/schemas/HTTPFields"
+
+    UpdateMonitorRequest:
+      allOf:
+        - type: object
+          properties:
+            name: { type: string, minLength: 1 }
+            auto_resume: { type: boolean }
+        - $ref: "#/components/schemas/ScheduleFields"
+        - $ref: "#/components/schemas/HTTPFields"
+
+    Monitor:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, enum: [heartbeat, http] }
+        slug: { type: string }
+        name: { type: string }
+        state: { type: string, enum: [new, up, late, down] }
+        display_state: { type: string, enum: [new, up, late, down, paused], description: "state, unless paused=true, in which case always paused" }
+        ping_url: { type: string, format: uri, description: "heartbeat monitors only" }
+        schedule_kind: { type: string, enum: [period, cron] }
+        period_s: { type: integer }
+        cron_expr: { type: string }
+        tz: { type: string }
+        grace_s: { type: integer }
+        url: { type: string, format: uri, description: "http monitors only" }
+        method: { type: string }
+        interval_s: { type: integer }
+        timeout_s: { type: integer }
+        fail_threshold: { type: integer }
+        http_config: {}
+        fail_streak: { type: integer }
+        alerts_muted: { type: boolean }
+        auto_resume: { type: boolean }
+        last_checkin_at: { type: string, format: date-time }
+        next_deadline: { type: string, format: date-time }
+        paused_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        schedule_summary: { type: string, description: "Human-readable schedule description" }
+        daily_stats:
+          type: array
+          description: "90-day window; only populated on get-one and list responses"
+          items: { $ref: "#/components/schemas/DailyStat" }
+      required: [id, kind, slug, name, state, display_state, fail_streak, alerts_muted, auto_resume, created_at, updated_at]
+
+    DailyStat:
+      type: object
+      properties:
+        day: { type: string, format: date }
+        checkins: { type: integer }
+        failures: { type: integer }
+        downtime_s: { type: integer }
+
+    MonitorListResponse:
+      type: object
+      properties:
+        monitors:
+          type: array
+          items: { $ref: "#/components/schemas/Monitor" }
+        next_cursor: { type: string }
+      required: [monitors]
+
+    DescribeResponse:
+      type: object
+      properties:
+        description: { type: string }
+        next_runs:
+          type: array
+          items: { type: string, format: date-time }
+          description: "Next 3 occurrences; cron schedules only"
+      required: [description]
+
+    EventResponse:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        monitor_id: { type: string, format: uuid }
+        type: { type: string, enum: [up, late, down, pause, resume, mute, unmute, config_change, tls_expiry] }
+        message: { type: string }
+        meta: { description: "Event-specific JSON payload, e.g. config_change's changed-field list" }
+        created_at: { type: string, format: date-time }
+      required: [id, monitor_id, type, message, created_at]
+
+    EventListResponse:
+      type: object
+      properties:
+        events:
+          type: array
+          items: { $ref: "#/components/schemas/EventResponse" }
+        next_cursor: { type: string }
+      required: [events]
+
+    CheckinResponse:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        monitor_id: { type: string, format: uuid }
+        kind: { type: string, enum: [success, start, fail] }
+        source_ip: { type: string }
+        user_agent: { type: string }
+        body: { type: string, description: "Truncated to 10 KB at ingest; rendered as escaped text, never interpreted as HTML" }
+        created_at: { type: string, format: date-time }
+      required: [id, monitor_id, kind, created_at]
+
+    CheckinListResponse:
+      type: object
+      properties:
+        checkins:
+          type: array
+          items: { $ref: "#/components/schemas/CheckinResponse" }
+        next_cursor: { type: string }
+      required: [checkins]
+
+    ProbeResultResponse:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        monitor_id: { type: string, format: uuid }
+        ok: { type: boolean }
+        http_status: { type: integer }
+        latency_ms: { type: integer }
+        error: { type: string }
+        tls_expires_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+      required: [id, monitor_id, ok, created_at]
+
+    ProbeResultListResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items: { $ref: "#/components/schemas/ProbeResultResponse" }
+        next_cursor: { type: string }
+      required: [results]
+
+    LatencyPoint:
+      type: object
+      properties:
+        bucket_start: { type: string, format: date-time }
+        p50: { type: number }
+        p95: { type: number }
+        avg: { type: number }
+        sample_count: { type: integer, format: int64 }
+      required: [bucket_start, p50, p95, avg, sample_count]
+
+    LatencySeriesResponse:
+      type: object
+      properties:
+        window: { type: string, enum: ["24h", "7d", "30d"] }
+        points:
+          type: array
+          items: { $ref: "#/components/schemas/LatencyPoint" }
+      required: [window, points]
+
+    CreatedAPIKey:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        label: { type: string }
+        key: { type: string, description: "Plaintext pk_... token — shown only in this response, never recoverable afterward", example: "pk_ab12cd34..." }
+        created_at: { type: string, format: date-time }
+      required: [id, label, key, created_at]
+
+    APIKey:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        label: { type: string }
+        last_used_at: { type: ["string", "null"], format: date-time }
+        revoked_at: { type: ["string", "null"], format: date-time }
+        created_at: { type: string, format: date-time }
+      required: [id, label, created_at]
