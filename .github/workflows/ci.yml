@@ -189,6 +189,11 @@ jobs:
       JWT_REFRESH_TTL: 720h
       REGISTRATION_OPEN: "true"
       PING_TEST_CLOCK: "1"
+      # http-monitor-lifecycle.spec.ts points an HTTP monitor at a mock target
+      # the Playwright process spins up on localhost; the SSRF guard
+      # (backend/worker/prober/probe.go) blocks loopback by default, so it
+      # must be allowlisted here — never done in dev/production config.
+      SSRF_ALLOWLIST: "127.0.0.1/32,::1/128"
       NEXT_PUBLIC_API_BASE_URL: http://localhost:8080
     steps:
       - uses: actions/checkout@v4
@@ -223,7 +228,10 @@ jobs:
         # only waits on process startup — a cold `go run` compile (no build
         # cache on a fresh runner) can alone exceed a 30s polling window,
         # timing the health check out before the server ever listens.
-        run: cd backend && go build -o /tmp/ping-api ./cmd/ping
+        # -tags e2e compiles in the /test/advance-clock time-warp endpoint
+        # (PING-022); it's a no-op unless PING_ENV=test also gates it at
+        # runtime, and is never used in the backend/frontend/integration jobs.
+        run: cd backend && go build -tags e2e -o /tmp/ping-api ./cmd/ping
 
       - name: Start backend API
         run: |

@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/sukhera/ping/internal/testclock"
 	"github.com/sukhera/ping/store"
 )
 
@@ -100,7 +101,7 @@ func (h *checkinHandler) ingest(w http.ResponseWriter, r *http.Request, kind sto
 		SourceIP:  ip,
 		UserAgent: r.UserAgent(),
 		Body:      body,
-		Now:       time.Now(),
+		Now:       testclock.Now(),
 	})
 	switch {
 	case err == nil:

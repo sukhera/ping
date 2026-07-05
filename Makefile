@@ -10,7 +10,7 @@ SQLC_VERSION := v1.31.1
 MIGRATE_VERSION := v4.19.1
 
 .PHONY: help dev docker-up docker-down migrate-up migrate-down sqlc hooks tools \
-        verify verify-backend verify-frontend verify-generated test-integration
+        verify verify-backend verify-frontend verify-generated test-integration build-e2e
 
 help:                                                            ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | sed -E 's/:.*## /|/' | sort | awk -F'|' '{printf "%-20s %s\n", $$1, $$2}'
@@ -78,3 +78,6 @@ verify-generated:                                                ## sqlc output 
 
 test-integration:                                                ## needs docker-up
 	cd backend && go test -race -tags integration ./...
+
+build-e2e:                                                       ## build the API with the test-only time-warp endpoint (PING-022)
+	cd backend && go build -tags e2e -o tmp/ping-api-e2e ./cmd/ping

@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/sukhera/ping/internal/testclock"
 	"github.com/sukhera/ping/store"
 	"github.com/sukhera/ping/worker"
 )
@@ -43,7 +44,7 @@ func Run(ctx context.Context, st Store, hb *worker.Heartbeat, interval time.Dura
 		Jitter: interval / 8,
 		HB:     hb,
 		Tick: func(ctx context.Context) error {
-			res, err := st.EvaluateDueMonitors(ctx, time.Now(), claimLimit)
+			res, err := st.EvaluateDueMonitors(ctx, testclock.Now(), claimLimit)
 			if err != nil {
 				return err
 			}
