@@ -30,6 +30,9 @@ type fakeMonitorStore struct {
 	listDailyStatsFn      func(ctx context.Context, monitorIDs []string, since time.Time) (map[string][]store.DailyStat, error)
 
 	listCheckinsByMonitorFn func(ctx context.Context, monitorID, cursor string, limit int32) (store.CheckinPage, error)
+
+	listProbeResultsByMonitorFn func(ctx context.Context, monitorID, outcome, cursor string, limit int32) (store.ProbeResultPage, error)
+	latencySeriesByMonitorFn    func(ctx context.Context, monitorID string, since time.Time, bucketSeconds int32) ([]store.LatencyBucket, error)
 }
 
 func (f *fakeMonitorStore) CreateMonitor(ctx context.Context, p store.CreateMonitorParams) (store.Monitor, error) {
@@ -76,6 +79,18 @@ func (f *fakeMonitorStore) ListCheckinsByMonitor(ctx context.Context, monitorID,
 		return store.CheckinPage{}, nil
 	}
 	return f.listCheckinsByMonitorFn(ctx, monitorID, cursor, limit)
+}
+func (f *fakeMonitorStore) ListProbeResultsByMonitor(ctx context.Context, monitorID, outcome, cursor string, limit int32) (store.ProbeResultPage, error) {
+	if f.listProbeResultsByMonitorFn == nil {
+		return store.ProbeResultPage{}, nil
+	}
+	return f.listProbeResultsByMonitorFn(ctx, monitorID, outcome, cursor, limit)
+}
+func (f *fakeMonitorStore) LatencySeriesByMonitor(ctx context.Context, monitorID string, since time.Time, bucketSeconds int32) ([]store.LatencyBucket, error) {
+	if f.latencySeriesByMonitorFn == nil {
+		return nil, nil
+	}
+	return f.latencySeriesByMonitorFn(ctx, monitorID, since, bucketSeconds)
 }
 
 // withChiURLParam and withAuthedUser build a request as if it had already

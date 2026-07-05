@@ -20,3 +20,47 @@ SET state         = sqlc.arg(state),
     next_probe_at = sqlc.arg(next_probe_at),
     updated_at    = now()
 WHERE id = sqlc.arg(id);
+
+-- SetTLSWarnedExpiry records the tls_expires_at value a TLS-expiry warning was
+-- just sent for (PING-018), so the next probe against the same certificate
+-- (same tls_expires_at) does not re-warn. Passing a later tls_expires_at
+-- (certificate renewed) naturally re-arms the warning on its own next expiry.
+-- name: SetTLSWarnedExpiry :exec
+UPDATE monitors
+SET tls_warned_expires_at = sqlc.arg(tls_expires_at)::timestamptz
+WHERE id = sqlc.arg(id);
+
+-- ListProbeResultsByMonitor is the HTTP monitor probe log (PING-018):
+-- cursor-paginated, newest first, optionally filtered to only failed
+-- (?outcome=fail) or only successful (?outcome=success) probes. Uses
+-- idx_probe_results_mon (monitor_id, created_at DESC); the id-based cursor
+-- (WHERE id < cursor) keeps pagination stable under concurrent inserts, same
+-- pattern as the events/checkins feeds.
+-- name: ListProbeResultsByMonitor :many
+SELECT * FROM probe_results
+WHERE monitor_id = sqlc.arg(monitor_id)
+  AND (sqlc.narg(ok)::boolean IS NULL OR ok = sqlc.narg(ok)::boolean)
+  AND (sqlc.narg(cursor_id)::bigint IS NULL OR id < sqlc.narg(cursor_id)::bigint)
+ORDER BY id DESC
+LIMIT sqlc.arg(page_limit);
+
+-- LatencySeriesByMonitor is the latency chart's backing query (PING-018):
+-- buckets successful probes into fixed-width time buckets over [since, now)
+-- and computes p50/p95/avg latency per bucket via PERCENTILE_CONT, so the
+-- frontend gets pre-aggregated points instead of raw probe rows regardless of
+-- the requested window (24h/7d/30d map to different bucket_seconds chosen by
+-- the caller). Failed probes are excluded — a failure has no meaningful
+-- latency signal and would skew the percentiles.
+-- name: LatencySeriesByMonitor :many
+SELECT
+    to_timestamp(floor(extract(epoch FROM created_at) / sqlc.arg(bucket_seconds)::bigint) * sqlc.arg(bucket_seconds)::bigint) AS bucket_start,
+    PERCENTILE_CONT(0.5)  WITHIN GROUP (ORDER BY latency_ms) AS p50,
+    PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY latency_ms) AS p95,
+    AVG(latency_ms)::float8 AS avg,
+    COUNT(*) AS sample_count
+FROM probe_results
+WHERE monitor_id = sqlc.arg(monitor_id)
+  AND ok = true
+  AND created_at >= sqlc.arg(since)::timestamptz
+GROUP BY bucket_start
+ORDER BY bucket_start ASC;

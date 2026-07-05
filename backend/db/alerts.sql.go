@@ -21,7 +21,8 @@ SELECT a.id, a.monitor_id, a.event_id, a.channel, a.status, a.attempts,
        m.alerts_muted     AS alerts_muted,
        e.type             AS event_type,
        e.message          AS event_message,
-       e.created_at       AS event_created_at
+       e.created_at       AS event_created_at,
+       e.meta             AS event_meta
 FROM alerts a
 JOIN monitors m ON m.id = a.monitor_id
 JOIN users u    ON u.id = m.user_id
@@ -57,6 +58,7 @@ type ClaimDueAlertsRow struct {
 	EventType      string             `json:"event_type"`
 	EventMessage   string             `json:"event_message"`
 	EventCreatedAt pgtype.Timestamptz `json:"event_created_at"`
+	EventMeta      []byte             `json:"event_meta"`
 }
 
 // ClaimDueAlerts is the alerter worker's scan (PING-012): it claims pending
@@ -94,6 +96,7 @@ func (q *Queries) ClaimDueAlerts(ctx context.Context, arg ClaimDueAlertsParams) 
 			&i.EventType,
 			&i.EventMessage,
 			&i.EventCreatedAt,
+			&i.EventMeta,
 		); err != nil {
 			return nil, err
 		}

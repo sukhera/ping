@@ -226,6 +226,24 @@ func TestRender_ReminderUsesReminderTemplate(t *testing.T) {
 	}
 }
 
+func TestRender_TLSExpiryUsesExpiryTemplate(t *testing.T) {
+	st := &fakeStore{}
+	a := New(st, &fakeChannel{}, "")
+
+	expiresAt := time.Now().Add(13 * 24 * time.Hour)
+	job := downJob(9, 0)
+	job.EventType = "tls_expiry"
+	job.TLSExpiresAt = &expiresAt
+	msg, err := a.render(context.Background(), job)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	// alert/template.go's KindTLSExpiry subject: "[TLS] <name> — certificate expires in N days".
+	if got := msg.Subject; !containsAll(got, "[TLS]", "expires") {
+		t.Errorf("tls_expiry subject = %q, want it to mention [TLS] and expires", got)
+	}
+}
+
 func TestBackoff_Schedule(t *testing.T) {
 	want := []time.Duration{time.Minute, 5 * time.Minute, 25 * time.Minute}
 	for i, w := range want {

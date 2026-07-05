@@ -52,6 +52,144 @@ func (q *Queries) InsertProbeResult(ctx context.Context, arg InsertProbeResultPa
 	return i, err
 }
 
+const latencySeriesByMonitor = `-- name: LatencySeriesByMonitor :many
+SELECT
+    to_timestamp(floor(extract(epoch FROM created_at) / $1::bigint) * $1::bigint) AS bucket_start,
+    PERCENTILE_CONT(0.5)  WITHIN GROUP (ORDER BY latency_ms) AS p50,
+    PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY latency_ms) AS p95,
+    AVG(latency_ms)::float8 AS avg,
+    COUNT(*) AS sample_count
+FROM probe_results
+WHERE monitor_id = $2
+  AND ok = true
+  AND created_at >= $3::timestamptz
+GROUP BY bucket_start
+ORDER BY bucket_start ASC
+`
+
+type LatencySeriesByMonitorParams struct {
+	BucketSeconds int64              `json:"bucket_seconds"`
+	MonitorID     pgtype.UUID        `json:"monitor_id"`
+	Since         pgtype.Timestamptz `json:"since"`
+}
+
+type LatencySeriesByMonitorRow struct {
+	BucketStart interface{} `json:"bucket_start"`
+	P50         float64     `json:"p50"`
+	P95         float64     `json:"p95"`
+	Avg         float64     `json:"avg"`
+	SampleCount int64       `json:"sample_count"`
+}
+
+// LatencySeriesByMonitor is the latency chart's backing query (PING-018):
+// buckets successful probes into fixed-width time buckets over [since, now)
+// and computes p50/p95/avg latency per bucket via PERCENTILE_CONT, so the
+// frontend gets pre-aggregated points instead of raw probe rows regardless of
+// the requested window (24h/7d/30d map to different bucket_seconds chosen by
+// the caller). Failed probes are excluded — a failure has no meaningful
+// latency signal and would skew the percentiles.
+func (q *Queries) LatencySeriesByMonitor(ctx context.Context, arg LatencySeriesByMonitorParams) ([]LatencySeriesByMonitorRow, error) {
+	rows, err := q.db.Query(ctx, latencySeriesByMonitor, arg.BucketSeconds, arg.MonitorID, arg.Since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []LatencySeriesByMonitorRow{}
+	for rows.Next() {
+		var i LatencySeriesByMonitorRow
+		if err := rows.Scan(
+			&i.BucketStart,
+			&i.P50,
+			&i.P95,
+			&i.Avg,
+			&i.SampleCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listProbeResultsByMonitor = `-- name: ListProbeResultsByMonitor :many
+SELECT id, monitor_id, ok, http_status, latency_ms, error, tls_expires_at, created_at FROM probe_results
+WHERE monitor_id = $1
+  AND ($2::boolean IS NULL OR ok = $2::boolean)
+  AND ($3::bigint IS NULL OR id < $3::bigint)
+ORDER BY id DESC
+LIMIT $4
+`
+
+type ListProbeResultsByMonitorParams struct {
+	MonitorID pgtype.UUID `json:"monitor_id"`
+	Ok        pgtype.Bool `json:"ok"`
+	CursorID  pgtype.Int8 `json:"cursor_id"`
+	PageLimit int32       `json:"page_limit"`
+}
+
+// ListProbeResultsByMonitor is the HTTP monitor probe log (PING-018):
+// cursor-paginated, newest first, optionally filtered to only failed
+// (?outcome=fail) or only successful (?outcome=success) probes. Uses
+// idx_probe_results_mon (monitor_id, created_at DESC); the id-based cursor
+// (WHERE id < cursor) keeps pagination stable under concurrent inserts, same
+// pattern as the events/checkins feeds.
+func (q *Queries) ListProbeResultsByMonitor(ctx context.Context, arg ListProbeResultsByMonitorParams) ([]ProbeResult, error) {
+	rows, err := q.db.Query(ctx, listProbeResultsByMonitor,
+		arg.MonitorID,
+		arg.Ok,
+		arg.CursorID,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ProbeResult{}
+	for rows.Next() {
+		var i ProbeResult
+		if err := rows.Scan(
+			&i.ID,
+			&i.MonitorID,
+			&i.Ok,
+			&i.HttpStatus,
+			&i.LatencyMs,
+			&i.Error,
+			&i.TlsExpiresAt,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const setTLSWarnedExpiry = `-- name: SetTLSWarnedExpiry :exec
+UPDATE monitors
+SET tls_warned_expires_at = $1::timestamptz
+WHERE id = $2
+`
+
+type SetTLSWarnedExpiryParams struct {
+	TlsExpiresAt pgtype.Timestamptz `json:"tls_expires_at"`
+	ID           pgtype.UUID        `json:"id"`
+}
+
+// SetTLSWarnedExpiry records the tls_expires_at value a TLS-expiry warning was
+// just sent for (PING-018), so the next probe against the same certificate
+// (same tls_expires_at) does not re-warn. Passing a later tls_expires_at
+// (certificate renewed) naturally re-arms the warning on its own next expiry.
+func (q *Queries) SetTLSWarnedExpiry(ctx context.Context, arg SetTLSWarnedExpiryParams) error {
+	_, err := q.db.Exec(ctx, setTLSWarnedExpiry, arg.TlsExpiresAt, arg.ID)
+	return err
+}
+
 const updateMonitorOnProbe = `-- name: UpdateMonitorOnProbe :exec
 UPDATE monitors
 SET state         = $1,

@@ -114,6 +114,8 @@ func New(addr string, deps Deps) *http.Server {
 			r.Post("/{id}/unmute", mh.unmute)
 			r.Get("/{id}/events", mh.listMonitorEvents)
 			r.Get("/{id}/checkins", mh.listMonitorCheckins)
+			r.Get("/{id}/probe-results", mh.listMonitorProbeResults)
+			r.Get("/{id}/latency", mh.getMonitorLatencySeries)
 		})
 	})
 

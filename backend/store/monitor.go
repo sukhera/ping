@@ -52,8 +52,11 @@ type Monitor struct {
 	AlertsMuted   bool
 	AutoResume    bool
 	PausedAt      *time.Time
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	// TLSWarnedExpiresAt is the tls_expires_at value the last TLS-expiry
+	// warning was sent for (PING-018); nil means never warned.
+	TLSWarnedExpiresAt *time.Time
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 // MonitorPage is one page of a cursor-paginated monitor list.
@@ -440,6 +443,7 @@ func toMonitor(row db.Monitor) Monitor {
 	m.NextDeadline = timePtr(row.NextDeadline)
 	m.NextProbeAt = timePtr(row.NextProbeAt)
 	m.PausedAt = timePtr(row.PausedAt)
+	m.TLSWarnedExpiresAt = timePtr(row.TlsWarnedExpiresAt)
 
 	if row.PausedAt.Valid {
 		m.DisplayState = "paused"

@@ -210,6 +210,11 @@ func (a *Alerter) render(ctx context.Context, job store.AlertJob) (alert.Message
 			return alert.Message{}, fmt.Errorf("resolve downtime: %w", err)
 		}
 		n.Downtime = d
+	case job.EventType == "tls_expiry":
+		n.Kind = alert.KindTLSExpiry
+		if job.TLSExpiresAt != nil {
+			n.TLSExpiresAt = *job.TLSExpiresAt
+		}
 	default: // "down" and any other alerting transition
 		// Reason left empty: the template's default "check failed" reads better
 		// than the raw event type.

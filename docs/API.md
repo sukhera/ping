@@ -162,6 +162,32 @@ Immutable timeline of everything that happened to a monitor: state transitions
   an HTML/script body is inert on screen). Cursor-paginated: `?cursor=`,
   `?limit=` (default 20, max 100).
 
+## Probe log + latency series (PING-018)
+
+For `kind: http` monitors, every probe attempt is recorded in `probe_results`
+(status, latency, error, and TLS certificate expiry when the target is HTTPS).
+
+- `GET /api/v1/monitors/{id}/probe-results` — one monitor's probe log
+  (owner-scoped), newest first: `ok`, `http_status`, `latency_ms`, `error`,
+  `tls_expires_at`. Filter: `?outcome=success` or `?outcome=fail` (omit for
+  all). Cursor-paginated: `?cursor=`, `?limit=` (default 20, max 100).
+- `GET /api/v1/monitors/{id}/latency` — pre-bucketed latency series for the
+  detail-page chart. `?window=24h|7d|30d` (default `24h`); bucket width is
+  chosen server-side per window (5m/1h/6h) so the point count stays
+  chart-sized regardless of window length. Each point: `bucket_start`, `p50`,
+  `p95`, `avg` (all milliseconds), `sample_count`. Only successful probes
+  contribute — a failed probe has no meaningful latency to chart.
+
+### TLS certificate expiry warnings
+
+The prober records the leaf certificate's `NotAfter` on every successful
+HTTPS probe. When a certificate is within 14 days of expiring, a `tls_expiry`
+event + alert fires exactly once for that certificate — a monitor's
+`tls_warned_expires_at` column tracks which expiry was last warned about, so
+repeated probes against the same certificate don't re-alert every tick. When
+the certificate is renewed (a later `NotAfter` on a later probe), the warning
+automatically re-arms for the new expiry.
+
 ## Alerting (PING-011)
 
 Alerts are delivered through the `alert.Channel` abstraction (`backend/alert`).

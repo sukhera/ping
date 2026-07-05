@@ -13,8 +13,8 @@
 
 1. Work on exactly ONE ticket (PING-XXX) per branch: `ping-xxx-short-slug`.
 2. Read the ticket's section in TECH-PLAN.md §8 fully — its acceptance criteria are the definition of done, plus §9.
-3. Plan before implementing on `size:L` tickets. Do not expand scope; new ideas become new issue proposals.
-4. Skills in `.claude/skills/` (Go, database, security, React) apply — follow them.
+3. Before writing any code, invoke every matching skill in `.claude/skills/` (golang-backend-specialist, database-specialist, security-specialist, react-frontend-specialist) via the Skill tool for the areas the ticket touches — e.g. a ticket adding a worker that makes outbound HTTP calls touches Go AND security, so both get invoked. This is a required step, not background context to keep in mind.
+4. Plan before implementing on `size:L` tickets. Do not expand scope; new ideas become new issue proposals.
 
 ## Quality gate (CI is offline — this IS the gate)
 

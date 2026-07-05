@@ -25,7 +25,8 @@ SELECT a.id, a.monitor_id, a.event_id, a.channel, a.status, a.attempts,
        m.alerts_muted     AS alerts_muted,
        e.type             AS event_type,
        e.message          AS event_message,
-       e.created_at       AS event_created_at
+       e.created_at       AS event_created_at,
+       e.meta             AS event_meta
 FROM alerts a
 JOIN monitors m ON m.id = a.monitor_id
 JOIN users u    ON u.id = m.user_id

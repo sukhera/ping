@@ -126,16 +126,20 @@ func (p *Prober) probeOne(ctx context.Context, m store.Monitor) {
 	result := runProbe(probeCtx, client, method, m.URL, cfg)
 
 	intervalS := int32Or(m.IntervalS, 60)
+	now := time.Now()
 	outcome := store.ProbeOutcome{
-		MonitorID:       m.ID,
-		OK:              result.OK,
-		HTTPStatus:      result.HTTPStatus,
-		LatencyMS:       &result.LatencyMS,
-		Error:           result.Error,
-		FailThreshold:   int32Or(m.FailThreshold, defaultFailThreshold),
-		PriorState:      m.State,
-		PriorFailStreak: m.FailStreak,
-		NextProbeAt:     time.Now().Add(time.Duration(intervalS) * time.Second),
+		MonitorID:               m.ID,
+		OK:                      result.OK,
+		HTTPStatus:              result.HTTPStatus,
+		LatencyMS:               &result.LatencyMS,
+		Error:                   result.Error,
+		TLSExpiresAt:            result.TLSExpiresAt,
+		FailThreshold:           int32Or(m.FailThreshold, defaultFailThreshold),
+		PriorState:              m.State,
+		PriorFailStreak:         m.FailStreak,
+		PriorTLSWarnedExpiresAt: m.TLSWarnedExpiresAt,
+		NextProbeAt:             now.Add(time.Duration(intervalS) * time.Second),
+		Now:                     now,
 	}
 
 	res, err := p.st.RecordProbeResult(ctx, outcome)

@@ -226,10 +226,11 @@ func probeError(err error) string {
 // probeResult is one probe attempt's outcome, before it is translated into a
 // store.ProbeOutcome by the caller.
 type probeResult struct {
-	OK         bool
-	HTTPStatus *int32
-	LatencyMS  int32
-	Error      string
+	OK           bool
+	HTTPStatus   *int32
+	LatencyMS    int32
+	Error        string
+	TLSExpiresAt *time.Time
 }
 
 // runProbe executes one HTTP probe against a monitor's configured target,
@@ -259,24 +260,36 @@ func runProbe(ctx context.Context, client *http.Client, method, url string, cfg 
 
 	// resp.StatusCode is always a 3-digit HTTP status, well within int32 range.
 	status := int32(resp.StatusCode) //nolint:gosec // bounded by net/http
+	tlsExpiresAt := leafCertExpiry(resp.TLS)
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
 	if err != nil {
-		return probeResult{HTTPStatus: &status, LatencyMS: latency, Error: "failed reading response body"}
+		return probeResult{HTTPStatus: &status, LatencyMS: latency, Error: "failed reading response body", TLSExpiresAt: tlsExpiresAt}
 	}
 
 	if !isSuccessStatus(resp.StatusCode) {
-		return probeResult{HTTPStatus: &status, LatencyMS: latency, Error: fmt.Sprintf("unexpected status %d", resp.StatusCode)}
+		return probeResult{HTTPStatus: &status, LatencyMS: latency, Error: fmt.Sprintf("unexpected status %d", resp.StatusCode), TLSExpiresAt: tlsExpiresAt}
 	}
 
 	if cfg.Keyword != "" {
 		found := strings.Contains(string(body), cfg.Keyword)
 		if found == cfg.KeywordNegate {
-			return probeResult{HTTPStatus: &status, LatencyMS: latency, Error: "keyword assertion failed"}
+			return probeResult{HTTPStatus: &status, LatencyMS: latency, Error: "keyword assertion failed", TLSExpiresAt: tlsExpiresAt}
 		}
 	}
 
-	return probeResult{OK: true, HTTPStatus: &status, LatencyMS: latency}
+	return probeResult{OK: true, HTTPStatus: &status, LatencyMS: latency, TLSExpiresAt: tlsExpiresAt}
+}
+
+// leafCertExpiry returns the leaf certificate's NotAfter for an https probe,
+// or nil for a plain http target (state is nil) or the pathological case of a
+// verified TLS connection with zero peer certificates.
+func leafCertExpiry(state *tls.ConnectionState) *time.Time {
+	if state == nil || len(state.PeerCertificates) == 0 {
+		return nil
+	}
+	expiry := state.PeerCertificates[0].NotAfter
+	return &expiry
 }
 
 // isSuccessStatus applies the PRD F2.1 default expected-status policy
