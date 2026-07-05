@@ -1,5 +1,162 @@
 # API
 
+Full machine-readable reference: [`openapi.yaml`](../openapi.yaml) (OpenAPI
+3.1) at the repo root — every route, request/response schema, and status
+code in one file, lintable with `redocly lint openapi.yaml`. This document
+is the human-readable companion: narrative context, curl examples, and the
+reasoning behind each design decision.
+
+## Base URL and versioning
+
+All management-API and auth routes are under `/api/v1`. Ping ingestion
+(`/p/{slug}/...`) and `/health` have no version prefix — they're a stable,
+minimal public surface. `PING_BASE_URL` (`.env.example`) is the externally
+reachable API origin used to build the `ping_url` returned on monitor
+create/get.
+
+## Error envelope
+
+Every error response is one of two flat JSON shapes, `Content-Type:
+application/json; charset=utf-8`:
+
+```json
+{"error": "invalid or expired access token"}
+```
+
+```json
+{"error": "name is required", "field": "name"}
+```
+
+The `field` variant appears only on `422` monitor/api-key validation
+failures, naming the offending request field. Internal error detail (DB
+errors, panics) is logged server-side with a request ID and never reaches
+the client — those always come back as a generic `500
+{"error":"internal server error"}`.
+
+| Status | Meaning |
+| --- | --- |
+| `400` | Malformed JSON body, or an invalid query parameter (`limit`, `kind`, `state`, `outcome`, `window`, pagination `cursor`) |
+| `401` | Missing/malformed `Authorization` header, invalid/expired JWT, invalid/revoked API key, wrong login credentials, invalid/expired/reused refresh token |
+| `403` | Registration closed, or a monitor/resource exists but is owned by a different account (never masked as `404` — that would be an IDOR information leak) |
+| `404` | Resource does not exist |
+| `409` | Email already registered |
+| `422` | Field-level validation failure (schedule/HTTP config, or weak password/invalid email on register) |
+| `429` | Rate limit exceeded — see below |
+| `502` / `503` | Alerting test: permanent vs. transient SMTP failure, or SMTP unconfigured |
+| `500` | Unmapped internal error or recovered panic |
+
+## Rate limiting
+
+Three independent fixed-window limiters (Redis `INCR`+`EXPIRE`), all **fail
+open** — a Redis outage never locks a legitimate caller out:
+
+| Limiter | Limit | Key | Applies to |
+| --- | --- | --- | --- |
+| Auth | 5/min per IP | `rate:register:<ip>` / `rate:login:<ip>` | `POST /api/v1/auth/register`, `/login` |
+| Ping ingest | 120/min per IP | `rate:ping:<ip>` | `/p/{slug}/...` |
+| API key | 300/min per key | `rate:apikey:<key-id>` | Any request authenticated with `pk_...` |
+
+Over the limit: `429` with a `Retry-After` header (seconds) and
+`{"error":"too many attempts, try again later"}`. No `X-RateLimit-*`
+headers are emitted. The auth limiter can be disabled only when
+`PING_ENV=test` (the Playwright suite shares one IP across workers) — never
+in dev or production.
+
+## Auth (PING-004)
+
+Email + password, JWT RS256 access tokens, httpOnly refresh cookie with
+rotation-based reuse detection.
+
+| Endpoint | Auth | Effect |
+| --- | --- | --- |
+| `POST /api/v1/auth/register` | none | Body `{"email", "password"}` (password ≥ 12 chars). `201` + access token + refresh cookie. `403` if registration is closed (`REGISTRATION_OPEN=false`), `409` if the email is taken. |
+| `POST /api/v1/auth/login` | none | Same body shape. `200` + access token + refresh cookie. `401` on wrong credentials. |
+| `POST /api/v1/auth/refresh` | refresh cookie | No body — reads `ping_refresh`. `200` + new access token + rotated cookie. Reuse of an already-rotated token revokes the whole session family (theft detection); `401` in all failure cases. |
+| `POST /api/v1/auth/logout` | refresh cookie (optional) | Revokes the token family and clears the cookie. Always `200`, even with no cookie present. |
+
+All four are rate-limited 5/min per IP on register/login (see above).
+
+**Access token**: `Authorization: Bearer <token>`, RS256, claims `sub`
+(user id), `jti`, `iat`, `exp`, `iss=ping`, `aud=[ping-api]`. TTL
+`JWT_ACCESS_TTL` (default `15m`). **Refresh token**: a separate opaque
+32-byte-hex secret, never returned in a JSON body — only via the
+`ping_refresh` httpOnly, `SameSite=Lax` cookie scoped to `/api/v1/auth`.
+Stored server-side only as a SHA-256 hash. TTL `JWT_REFRESH_TTL` (default
+`720h`/30 days).
+
+### curl examples
+
+```sh
+curl -sX POST http://localhost:8080/api/v1/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"email":"you@example.com","password":"correct-horse-battery"}'
+# {"access_token":"eyJ...", "user":{"id":"...", "email":"you@example.com"}}
+# also sets Set-Cookie: ping_refresh=...
+
+export JWT=eyJ...   # from the response above
+
+curl -sX POST http://localhost:8080/api/v1/auth/refresh -b "ping_refresh=<cookie value>"
+
+curl -sX POST http://localhost:8080/api/v1/auth/logout -b "ping_refresh=<cookie value>"
+```
+
+## Monitors (PING-007)
+
+Full CRUD plus lifecycle actions, all under `/api/v1/monitors`, all
+accepting **JWT or API key** (see "API keys" below). Ownership is enforced
+on every read/write: a monitor owned by another account is `403`, not
+`404`.
+
+| Endpoint | Effect |
+| --- | --- |
+| `POST /api/v1/monitors` | Create. Body varies by `kind` (`heartbeat` needs `schedule_kind`/`period_s` or `cron_expr`/`tz`/`grace_s`; `http` needs `url`/`interval_s`/`timeout_s`/`fail_threshold`). `201` + full monitor body. |
+| `GET /api/v1/monitors` | List, paginated (`?cursor=`, `?limit=` default 20 max 100), filterable by `?q=` (name search), `?kind=`, `?state=`. Each row includes a 90-day `daily_stats` window for the dashboard's uptime bar. |
+| `GET /api/v1/monitors/{id}` | One monitor, with `daily_stats`. |
+| `PATCH /api/v1/monitors/{id}` | Partial update — only fields present in the body change. `kind` is immutable; schedule fields are heartbeat-only, URL/HTTP fields are http-only. Records a `config_change` event listing changed fields. |
+| `DELETE /api/v1/monitors/{id}` | `204` on success. |
+
+See `openapi.yaml` for the full field-by-field request/response schema
+(`Monitor`, `CreateMonitorRequest`, `UpdateMonitorRequest`) — kind-specific
+bounds (period 60s–365d, grace 60s–30d, HTTP interval 30–86400s, timeout
+1–30s) are enforced with `422 {"error", "field"}` on violation.
+
+### curl examples
+
+```sh
+curl -sX POST http://localhost:8080/api/v1/monitors \
+  -H "Authorization: Bearer $JWT" -H "Content-Type: application/json" \
+  -d '{"kind":"heartbeat","name":"nightly backup","schedule_kind":"period","period_s":300,"tz":"UTC","grace_s":60}'
+
+curl -s "http://localhost:8080/api/v1/monitors?state=down&limit=10" -H "Authorization: Bearer $JWT"
+
+curl -sX PATCH http://localhost:8080/api/v1/monitors/<id> \
+  -H "Authorization: Bearer $JWT" -H "Content-Type: application/json" \
+  -d '{"grace_s":120}'
+```
+
+## Schedule preview (PING-007)
+
+`POST /api/v1/schedule/describe` — same auth as monitors. Body is the
+schedule portion of a monitor request (`schedule_kind`, `period_s` or
+`cron_expr`, `tz`, `grace_s`); nothing is persisted. Returns
+`{"description": "...", "next_runs": [...]}` — `next_runs` (next 3
+occurrences) is populated for `cron` schedules only. `422` field error on
+an invalid expression/timezone, same shape as monitor validation.
+
+## Health check
+
+`GET /health` — unauthenticated, no rate limit. `200` when Postgres is
+reachable (Redis and worker heartbeats are reported but never flip overall
+status on their own — Redis outages degrade gracefully, and a missing
+worker heartbeat just means that role isn't running in this deployment). A
+worker heartbeat present but stale (>60s old) is the one Redis-adjacent
+condition that does flip overall status to `503`, since it signals a
+wedged process rather than an absent one.
+
+```json
+{"status":"ok","components":{"postgres":{"status":"up"},"redis":{"status":"up"},"scheduler":{"status":"up"},"prober":{"status":"up"},"alerter":{"status":"up"}}}
+```
+
 ## Ping ingestion (PING-008)
 
 The ingestion endpoints are the hot path: a cron job, script, or container pings
