@@ -202,7 +202,17 @@ func maybeWarnTLSExpiry(ctx context.Context, q *db.Queries, monitorID pgtype.UUI
 	if o.TLSExpiresAt.Sub(now) > tlsWarningWindow {
 		return nil
 	}
-	if o.PriorTLSWarnedExpiresAt != nil && o.PriorTLSWarnedExpiresAt.Equal(*o.TLSExpiresAt) {
+	// Compared at second precision, not exact equality: PriorTLSWarnedExpiresAt
+	// round-trips through a TIMESTAMPTZ column (microsecond precision) while
+	// TLSExpiresAt is parsed fresh from ASN.1 on every probe — real certificate
+	// NotAfter fields are whole-second (X.509 UTCTime/GeneralizedTime carry no
+	// sub-second component), so exact time.Time equality is needlessly fragile
+	// for a comparison whose only job is "is this the same certificate expiry,
+	// give or take the 14-day warning window". Truncating both sides to the
+	// second before comparing keeps the re-arm-on-renewal behavior (a renewed
+	// cert's NotAfter differs by hours/days, never sub-second) while removing
+	// any dependency on sub-second round-trip fidelity.
+	if o.PriorTLSWarnedExpiresAt != nil && o.PriorTLSWarnedExpiresAt.Truncate(time.Second).Equal(o.TLSExpiresAt.Truncate(time.Second)) {
 		return nil
 	}
 
