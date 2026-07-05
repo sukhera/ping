@@ -19,6 +19,7 @@ coverage/
 *.test
 playwright-report/
 test-results/
+frontend/e2e/.shared-user.json
 
 # OS / editor
 .DS_Store

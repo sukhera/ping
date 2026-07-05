@@ -14,9 +14,11 @@ async function registerAndLogin(page: Page): Promise<{ email: string }> {
   return { email };
 }
 
-// The create/edit monitor UI (PING-015) doesn't exist yet — seed directly
-// against the backend API, mirroring backend/server/monitor_integration_test.go's
-// pattern. Requires a real backend running per e2e/README.md.
+// Seeds directly against the backend API (mirroring
+// backend/server/monitor_integration_test.go's pattern) rather than going
+// through the create-monitor UI — this spec is testing the dashboard, not
+// monitor creation (see monitor-form.spec.ts for that). Requires a real
+// backend running per e2e/README.md.
 async function createHeartbeatMonitor(
   request: APIRequestContext,
   accessToken: string,

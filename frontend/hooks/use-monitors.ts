@@ -1,6 +1,8 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
+  createMonitor,
+  describeSchedule,
   getMonitor,
   listMonitorCheckins,
   listMonitorEvents,
@@ -9,14 +11,18 @@ import {
   pauseMonitor,
   resumeMonitor,
   unmuteMonitor,
+  updateMonitor,
 } from "@/lib/api";
 import type {
   CheckinListParams,
+  CreateMonitorRequest,
+  DescribeScheduleRequest,
   EventListParams,
   Monitor,
   MonitorDisplayState,
   MonitorListParams,
   MonitorListResponse,
+  UpdateMonitorRequest,
 } from "@/types/monitor";
 
 export const monitorKeys = {
@@ -160,4 +166,44 @@ export function useMuteMonitor() {
 
 export function useUnmuteMonitor() {
   return useMonitorMutation(unmuteMonitor, (m) => ({ ...m, alerts_muted: false }));
+}
+
+/** Create/edit monitor form (PING-015). On success, seeds the new detail
+ * query and invalidates every cached list so the dashboard picks it up on
+ * its next 30s poll (or immediately, for a refetch-on-mount navigation). */
+export function useCreateMonitor() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: CreateMonitorRequest) => createMonitor(body),
+    onSuccess: (monitor) => {
+      queryClient.setQueryData(monitorKeys.detail(monitor.id), monitor);
+      queryClient.invalidateQueries({ queryKey: monitorKeys.all });
+    },
+  });
+}
+
+export function useUpdateMonitor(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: UpdateMonitorRequest) => updateMonitor(id, body),
+    onSuccess: (monitor) => {
+      patchMonitorCaches(queryClient, monitor.id, () => monitor);
+    },
+  });
+}
+
+/**
+ * Live schedule preview (DESIGN.md §7.3): callers debounce their own calls
+ * (the form re-triggers this per keystroke via a change in `body`), so this
+ * hook itself does no debouncing — `enabled` gates it off entirely while a
+ * config doesn't validate client-side yet (e.g. required fields still empty).
+ */
+export function useDescribeSchedule(body: DescribeScheduleRequest, enabled: boolean) {
+  return useQuery({
+    queryKey: ["schedule", "describe", body],
+    queryFn: ({ signal }) => describeSchedule(body, signal),
+    enabled,
+    retry: false,
+    placeholderData: (prev) => prev,
+  });
 }
