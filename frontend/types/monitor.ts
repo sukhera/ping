@@ -142,3 +142,40 @@ export type EventListParams = {
   cursor?: string;
   limit?: number;
 };
+
+export type ProbeResult = {
+  id: number;
+  monitor_id: string;
+  ok: boolean;
+  http_status?: number;
+  latency_ms?: number;
+  error?: string;
+  tls_expires_at?: string;
+  created_at: string;
+};
+
+export type ProbeResultListResponse = {
+  results: ProbeResult[];
+  next_cursor?: string;
+};
+
+export type ProbeResultListParams = {
+  outcome?: "success" | "fail";
+  cursor?: string;
+  limit?: number;
+};
+
+export type LatencyWindow = "24h" | "7d" | "30d";
+
+export type LatencyPoint = {
+  bucket_start: string;
+  p50: number;
+  p95: number;
+  avg: number;
+  sample_count: number;
+};
+
+export type LatencySeriesResponse = {
+  window: LatencyWindow;
+  points: LatencyPoint[];
+};
