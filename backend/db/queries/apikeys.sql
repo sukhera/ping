@@ -17,7 +17,7 @@ UPDATE api_keys
 SET last_used_at = now()
 WHERE id = $1;
 
--- name: RevokeAPIKey :exec
+-- name: RevokeAPIKey :execrows
 UPDATE api_keys
 SET revoked_at = now()
-WHERE id = $1 AND user_id = $2;
+WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL;

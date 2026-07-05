@@ -92,10 +92,10 @@ func (q *Queries) ListAPIKeysByUser(ctx context.Context, userID pgtype.UUID) ([]
 	return items, nil
 }
 
-const revokeAPIKey = `-- name: RevokeAPIKey :exec
+const revokeAPIKey = `-- name: RevokeAPIKey :execrows
 UPDATE api_keys
 SET revoked_at = now()
-WHERE id = $1 AND user_id = $2
+WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL
 `
 
 type RevokeAPIKeyParams struct {
@@ -103,9 +103,12 @@ type RevokeAPIKeyParams struct {
 	UserID pgtype.UUID `json:"user_id"`
 }
 
-func (q *Queries) RevokeAPIKey(ctx context.Context, arg RevokeAPIKeyParams) error {
-	_, err := q.db.Exec(ctx, revokeAPIKey, arg.ID, arg.UserID)
-	return err
+func (q *Queries) RevokeAPIKey(ctx context.Context, arg RevokeAPIKeyParams) (int64, error) {
+	result, err := q.db.Exec(ctx, revokeAPIKey, arg.ID, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const touchAPIKeyLastUsed = `-- name: TouchAPIKeyLastUsed :exec

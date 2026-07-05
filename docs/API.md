@@ -60,6 +60,69 @@ Pings are rate-limited **per source IP** (generous: 120/minute), sharing the
 Redis fixed-window limiter used by auth. It **fails open** — a Redis outage never
 blocks legitimate check-ins. Over the limit returns `429` with `Retry-After`.
 
+## API keys + management-API auth (PING-016)
+
+Every `/api/v1/monitors/*`, `/api/v1/schedule/describe`, `/api/v1/alerting/test`,
+and `/api/v1/events` endpoint accepts **either** credential:
+
+- `Authorization: Bearer <JWT access token>` — the web app's session.
+- `Authorization: Bearer pk_<64 hex chars>` — a long-lived API key, for
+  scripts/CI. Full monitor CRUD works with just a key, no browser session
+  needed.
+
+API keys are **managed with a JWT session only** (`/api/v1/apikeys/*` below
+rejects a `pk_...` bearer with `401`) — a leaked key can use the management
+API but can never mint or revoke other keys for the account.
+
+A key is shown **exactly once**, at creation — only its SHA-256 hash is ever
+stored. There is no way to recover a lost key; revoke it and create a new one.
+A revoked (or unknown) key is rejected on the very next request — there is no
+cache window. Each key has its own rate limit (300 req/min), independent of
+other keys on the same account, so one misbehaving script can't starve
+another.
+
+| Endpoint | Auth | Effect |
+| --- | --- | --- |
+| `POST /api/v1/apikeys` | JWT only | Body `{"label": "..."}`. Returns `201` with `{"id", "label", "key", "created_at"}` — `key` is the plaintext, never returned again. |
+| `GET /api/v1/apikeys` | JWT only | Lists the caller's keys, newest first. Never includes the hash or plaintext. Revoked keys stay listed with `revoked_at` set (an audit trail, not silently removed). |
+| `DELETE /api/v1/apikeys/{id}` | JWT only | Revokes a key owned by the caller. `204` on success, `404` for a foreign or already-revoked key. |
+
+### curl examples
+
+Mint a key (needs a JWT from `/api/v1/auth/login`):
+
+```sh
+curl -sX POST http://localhost:8080/api/v1/apikeys \
+  -H "Authorization: Bearer $JWT" \
+  -H "Content-Type: application/json" \
+  -d '{"label":"ci runner"}'
+# {"id":"...", "label":"ci runner", "key":"pk_...", "created_at":"..."}
+```
+
+Full monitor CRUD using only the key — no JWT involved:
+
+```sh
+export PK=pk_...   # from the response above
+
+curl -sX POST http://localhost:8080/api/v1/monitors \
+  -H "Authorization: Bearer $PK" -H "Content-Type: application/json" \
+  -d '{"kind":"heartbeat","name":"nightly backup","schedule_kind":"period","period_s":300,"tz":"UTC","grace_s":60}'
+
+curl -s http://localhost:8080/api/v1/monitors -H "Authorization: Bearer $PK"
+
+curl -sX PATCH http://localhost:8080/api/v1/monitors/<id> \
+  -H "Authorization: Bearer $PK" -H "Content-Type: application/json" \
+  -d '{"name":"renamed"}'
+
+curl -sX DELETE http://localhost:8080/api/v1/monitors/<id> -H "Authorization: Bearer $PK"
+```
+
+Revoke the key (JWT session required):
+
+```sh
+curl -sX DELETE http://localhost:8080/api/v1/apikeys/<id> -H "Authorization: Bearer $JWT"
+```
+
 ## Pause / resume / mute (PING-010)
 
 All authenticated (Bearer access token) and owner-scoped: acting on another

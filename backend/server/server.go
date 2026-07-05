@@ -88,8 +88,11 @@ func New(addr string, deps Deps) *http.Server {
 	})
 
 	mh := newMonitorHandler(st, deps)
+	// The management API: accepts a JWT (web session) or a "pk_..." API key
+	// (PING-016), so the full monitor CRUD surface is scriptable with curl and
+	// just a key, per its AC.
 	r.Group(func(r chi.Router) {
-		r.Use(requireAuth(deps.JWTPublicKey))
+		r.Use(requireAuthOrAPIKey(deps.JWTPublicKey, st))
 
 		r.Post("/api/v1/schedule/describe", mh.describeSchedule)
 
@@ -111,6 +114,19 @@ func New(addr string, deps Deps) *http.Server {
 			r.Post("/{id}/unmute", mh.unmute)
 			r.Get("/{id}/events", mh.listMonitorEvents)
 			r.Get("/{id}/checkins", mh.listMonitorCheckins)
+		})
+	})
+
+	// API key management is JWT-only (a logged-in web session): a leaked key
+	// must not be able to mint or revoke other keys for the account.
+	kh := newAPIKeyHandler(st, deps)
+	r.Group(func(r chi.Router) {
+		r.Use(requireAuth(deps.JWTPublicKey))
+
+		r.Route("/api/v1/apikeys", func(r chi.Router) {
+			r.Post("/", kh.create)
+			r.Get("/", kh.list)
+			r.Delete("/{id}", kh.revoke)
 		})
 	})
 
