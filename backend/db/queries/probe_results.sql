@@ -64,3 +64,14 @@ WHERE monitor_id = sqlc.arg(monitor_id)
   AND created_at >= sqlc.arg(since)::timestamptz
 GROUP BY bucket_start
 ORDER BY bucket_start ASC;
+
+-- DeleteOldProbeResultsBatch (PING-020 retention): same batched-delete shape
+-- as DeleteOldCheckinsBatch — see that query's comment for why the subquery
+-- LIMIT matters.
+-- name: DeleteOldProbeResultsBatch :execrows
+DELETE FROM probe_results
+WHERE id IN (
+    SELECT id FROM probe_results
+    WHERE created_at < sqlc.arg(cutoff)::timestamptz
+    LIMIT sqlc.arg(batch_limit)
+);
