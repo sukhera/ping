@@ -1,0 +1,26 @@
+name: ping-soak
+
+# Compose override for the soak harness (hack/soak/run.sh): remaps
+# Postgres/Redis to non-default host ports and uses soak-run-specific volumes
+# so a soak run never touches dev's data or ports. Mailpit isn't started:
+# run.sh's app_env leaves SMTP unconfigured, so the alerter's "no channel
+# configured" path (backend/worker/alerter/alerter.go's dispatch) terminally
+# fails every alert immediately — status still resolves to 'failed' (not
+# stuck 'pending'), which is all the invariant audit checks for, without a
+# dependency on real mail delivery.
+services:
+  postgres:
+    ports: !override
+      - "${POSTGRES_PORT_OVERRIDE:-15432}:5432"
+    volumes:
+      - ping_soak_postgres_data:/var/lib/postgresql/data
+
+  redis:
+    ports: !override
+      - "${REDIS_PORT_OVERRIDE:-16379}:6379"
+    volumes:
+      - ping_soak_redis_data:/data
+
+volumes:
+  ping_soak_postgres_data:
+  ping_soak_redis_data:

@@ -90,6 +90,19 @@ The fix (PING-014): the limiter is disabled in the e2e environment only. `main.g
 
 Guidance for new specs: you no longer have to ration register/login calls, but still prefer sharing one registration/session across a `test.describe.serial` block where practical — it keeps specs fast and keeps the real limiter meaningfully exercised by the dedicated `TestRateLimit_*` unit tests rather than accidentally by e2e.
 
+## Soak/chaos testing (PING-023)
+
+`make soak` (or `./hack/soak/run.sh`) runs the harness backing PRD §10's success metric — "zero missed and zero duplicate alerts in a 48h synthetic soak test (flaky target + chaos restarts of the app)." It spins up an isolated stack (separate `docker compose` project `ping-soak`, separate ports, throwaway JWT keys — never touches your dev `.env` or `ping-dev` containers), creates a mix of synthetic heartbeat and HTTP monitors, drives continuous flaky traffic against them, and randomly restarts Postgres, Redis, or the app binary for the run duration. At the end it audits the database directly for three invariants: every down transition got exactly one alert row that resolved to `sent` or `failed` (never stuck `pending`, never more than one), no monitor is stuck in `late` past its grace period, and no monitor shows two consecutive same-type transitions (`down, down` or `up, up`) with nothing in between.
+
+Unlike the e2e time-warp endpoint above, this deliberately uses **real wall-clock time** — the app binary is built untagged (no `-tags e2e`), so a chaos restart lands at a genuinely unpredictable point in the scheduler/prober/alerter cycle, which is the whole point: catching a crash between "state committed" and "alert dispatched" that a synchronous, single-process test can't produce.
+
+```
+make soak                                              # full 48h run, 10 monitors
+SOAK_DURATION=10m MONITOR_COUNT=4 ./hack/soak/run.sh   # quick smoke run to sanity-check the harness itself
+```
+
+See `hack/soak/README.md` for the full architecture (loadgen, flaky target, chaos loop, audit queries) and how to read `report.md`. The stack is left running after the audit for manual inspection; tear it down with the `docker compose ... down -v` command the README gives.
+
 ## Known gaps
 
 - **Monitor detail stat row (PING-014):** DESIGN.md §7.2 specs "avg runtime
