@@ -1,3 +1,4 @@
+import type { APIKey, CreatedAPIKey } from "@/types/apikey";
 import type {
   CheckinListParams,
   CheckinListResponse,
@@ -240,4 +241,23 @@ export async function muteMonitor(id: string): Promise<Monitor> {
 
 export async function unmuteMonitor(id: string): Promise<Monitor> {
   return apiFetch<Monitor>(`/api/v1/monitors/${id}/unmute`, { method: "POST" });
+}
+
+export async function listAPIKeys(signal?: AbortSignal): Promise<APIKey[]> {
+  return apiFetch<APIKey[]>("/api/v1/apikeys", {}, signal);
+}
+
+export async function createAPIKey(label: string): Promise<CreatedAPIKey> {
+  return apiFetch<CreatedAPIKey>("/api/v1/apikeys", {
+    method: "POST",
+    body: JSON.stringify({ label }),
+  });
+}
+
+export async function revokeAPIKey(id: string): Promise<void> {
+  await apiFetch<void>(`/api/v1/apikeys/${id}`, { method: "DELETE" });
+}
+
+export async function sendTestEmail(): Promise<{ delivered_to: string }> {
+  return apiFetch<{ delivered_to: string }>("/api/v1/alerting/test", { method: "POST" });
 }
