@@ -112,18 +112,19 @@ test.describe.serial("monitor create/edit form", () => {
     await page.getByText("Advanced", { exact: true }).click();
     await expect(page.getByLabel("Confirmation threshold")).toHaveValue("2");
 
-    const [saveResponse] = await Promise.all([
-      page.waitForResponse(
-        (res) =>
-          res.url().endsWith(`/api/v1/monitors/${monitor.id}`) &&
-          res.request().method() === "PATCH",
-      ),
-      page.getByRole("button", { name: "Save changes" }).click(),
-    ]);
-    expect(saveResponse.ok()).toBe(true);
+    // An unchanged save is a true no-op (PING-015 AC): the form diffs against
+    // the loaded monitor and skips the PATCH call entirely when nothing
+    // changed, so there's no request here to wait on — only the navigation.
+    let patchCalled = false;
+    await page.route(`**/api/v1/monitors/${monitor.id}`, async (route) => {
+      if (route.request().method() === "PATCH") patchCalled = true;
+      await route.continue();
+    });
+
+    await page.getByRole("button", { name: "Save changes" }).click();
     await expect(page).toHaveURL(`/monitors/${monitor.id}`);
 
-    // An unchanged submit must not produce a config_change event (PING-015 AC).
+    expect(patchCalled).toBe(false);
     await expect(page.getByText("Configuration updated")).toHaveCount(0);
   });
 
