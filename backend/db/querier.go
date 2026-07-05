@@ -74,6 +74,12 @@ type Querier interface {
 	// compute recovery downtime ("recovered after 42m") for an 'up' alert.
 	LatestDownEventBefore(ctx context.Context, arg LatestDownEventBeforeParams) (Event, error)
 	ListAPIKeysByUser(ctx context.Context, userID pgtype.UUID) ([]ApiKey, error)
+	// Check-in log (PING-014): one monitor's check-ins, newest first. Ownership
+	// is checked in the handler, so this filters by monitor_id only (plus an
+	// optional cursor). Uses idx_checkins_monitor (monitor_id, created_at DESC).
+	// Cursor is the BIGSERIAL id (monotonic), so id < cursor paginates strictly,
+	// matching ListEventsByMonitorPage's convention.
+	ListCheckinsByMonitorPage(ctx context.Context, arg ListCheckinsByMonitorPageParams) ([]Checkin, error)
 	// Dashboard uptime bar (PING-013): last-N-days rollups for a batch of
 	// monitors in one query (avoids N+1 across a list page). Table is written by
 	// the nightly rollup job (PING-020, not yet built) — until then this always

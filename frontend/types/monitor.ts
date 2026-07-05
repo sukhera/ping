@@ -51,3 +51,45 @@ export type MonitorListParams = {
   cursor?: string;
   limit?: number;
 };
+
+export type CheckinKind = "success" | "start" | "fail";
+
+export type Checkin = {
+  id: number;
+  monitor_id: string;
+  kind: CheckinKind;
+  source_ip?: string;
+  user_agent?: string;
+  body?: string;
+  created_at: string;
+};
+
+export type CheckinListResponse = {
+  checkins: Checkin[];
+  next_cursor?: string;
+};
+
+export type CheckinListParams = {
+  cursor?: string;
+  limit?: number;
+};
+
+export type MonitorEvent = {
+  id: number;
+  monitor_id: string;
+  type: string;
+  message: string;
+  meta?: Record<string, unknown>;
+  created_at: string;
+};
+
+export type EventListResponse = {
+  events: MonitorEvent[];
+  next_cursor?: string;
+};
+
+export type EventListParams = {
+  type?: string;
+  cursor?: string;
+  limit?: number;
+};

@@ -74,3 +74,16 @@ Introduced in PING-002. Migrations live in `backend/db/migrations/` (golang-migr
 ## Time-warp testing
 
 Introduced alongside the `schedule` package (PING-006) and the scheduler worker (PING-009): deadline/grace-period math is tested by injecting a fake clock rather than sleeping in tests. Details land here once that package exists.
+
+## Known gaps
+
+- **Monitor detail stat row (PING-014):** DESIGN.md §7.2 specs "avg runtime
+  (heartbeat with `/start`) · total check-ins" in the stat row. No ticket
+  scoped a backend aggregate for either — PING-014 is `frontend`-only,
+  depending only on PING-013. The frontend approximates both from data already
+  available: total check-ins sums `daily_stats.checkins` over the fetched
+  window (not a true all-time count once rows fall out of the retention
+  window, PING-020), and avg runtime pairs `start`/`success` check-ins from
+  the currently loaded page of the check-in log (not the monitor's full
+  history). A future ticket should add a real backend aggregate if exact
+  all-time figures are needed.

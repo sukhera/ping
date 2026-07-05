@@ -147,3 +147,101 @@ func TestListEventsHandler_InvalidLimit400(t *testing.T) {
 		t.Fatalf("status = %d, want 400", rec.Code)
 	}
 }
+
+// listMonitorCheckins establishes ownership via GetMonitor (403 vs 404)
+// before reading the check-in log, mirroring listMonitorEvents.
+func TestListMonitorCheckinsHandler_ForeignMonitorReturns403(t *testing.T) {
+	fs := &fakeMonitorStore{
+		getMonitorFn: func(ctx context.Context, id, callerUserID string) (store.Monitor, error) {
+			return store.Monitor{}, errForbiddenForTest{}
+		},
+		listCheckinsByMonitorFn: func(context.Context, string, string, int32) (store.CheckinPage, error) {
+			t.Fatal("store must not be called when ownership check fails")
+			return store.CheckinPage{}, nil
+		},
+	}
+	h := newMonitorHandler(fs, testDeps(t))
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/monitors/m-1/checkins", nil)
+	req = withAuthedUser(req, "user-2")
+	req = withChiURLParam(req, "id", "m-1")
+	rec := httptest.NewRecorder()
+	h.listMonitorCheckins(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+}
+
+func TestListMonitorCheckinsHandler_PassesCursorAndLimitToStore(t *testing.T) {
+	var gotMonitor, gotCursor string
+	var gotLimit int32
+	ip := "203.0.113.7"
+	ua := "curl/8.0"
+	body := "<script>alert(1)</script>"
+	fs := &fakeMonitorStore{
+		getMonitorFn: func(ctx context.Context, id, callerUserID string) (store.Monitor, error) {
+			return store.Monitor{ID: id, UserID: callerUserID}, nil
+		},
+		listCheckinsByMonitorFn: func(_ context.Context, monitorID, cursor string, limit int32) (store.CheckinPage, error) {
+			gotMonitor, gotCursor, gotLimit = monitorID, cursor, limit
+			return store.CheckinPage{
+				Checkins: []store.Checkin{{
+					ID: 1, MonitorID: monitorID, Kind: "success",
+					SourceIP: &ip, UserAgent: &ua, Body: &body,
+				}},
+				NextCursor: "next-abc",
+			}, nil
+		},
+	}
+	h := newMonitorHandler(fs, testDeps(t))
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet,
+		"/api/v1/monitors/m-1/checkins?cursor=cur&limit=5", nil)
+	req = withAuthedUser(req, "user-1")
+	req = withChiURLParam(req, "id", "m-1")
+	rec := httptest.NewRecorder()
+	h.listMonitorCheckins(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if gotMonitor != "m-1" || gotCursor != "cur" || gotLimit != 5 {
+		t.Errorf("args = (%q,%q,%d), want (m-1,cur,5)", gotMonitor, gotCursor, gotLimit)
+	}
+
+	var resp checkinListResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Checkins) != 1 || resp.NextCursor != "next-abc" {
+		t.Fatalf("resp = %+v, want 1 checkin + cursor next-abc", resp)
+	}
+	c := resp.Checkins[0]
+	if c.SourceIP != ip || c.UserAgent != ua || c.Body != body {
+		t.Errorf("checkin = %+v, want source_ip/user_agent/body passed through as raw text", c)
+	}
+}
+
+func TestListMonitorCheckinsHandler_InvalidLimit400(t *testing.T) {
+	fs := &fakeMonitorStore{
+		getMonitorFn: func(ctx context.Context, id, callerUserID string) (store.Monitor, error) {
+			return store.Monitor{ID: id, UserID: callerUserID}, nil
+		},
+		listCheckinsByMonitorFn: func(context.Context, string, string, int32) (store.CheckinPage, error) {
+			t.Fatal("store must not be called on invalid limit")
+			return store.CheckinPage{}, nil
+		},
+	}
+	h := newMonitorHandler(fs, testDeps(t))
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/monitors/m-1/checkins?limit=abc", nil)
+	req = withAuthedUser(req, "user-1")
+	req = withChiURLParam(req, "id", "m-1")
+	rec := httptest.NewRecorder()
+	h.listMonitorCheckins(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}

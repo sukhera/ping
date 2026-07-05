@@ -90,6 +90,15 @@ Immutable timeline of everything that happened to a monitor: state transitions
   `?monitor=<id>`, `?type=<event-type>`. Pagination: `?cursor=`, `?limit=` (default 20, max 100).
 - `GET /api/v1/monitors/{id}/events` — one monitor's feed (owner-scoped). Filter: `?type=`.
 
+## Check-in log (PING-014)
+
+- `GET /api/v1/monitors/{id}/checkins` — one monitor's raw check-ins
+  (owner-scoped), newest first: `kind` (`success`/`start`/`fail`), `source_ip`,
+  `user_agent`, `body` (truncated to 10 KB at ingest, passed through verbatim —
+  the frontend renders it as escaped text, never `dangerouslySetInnerHTML`, so
+  an HTML/script body is inert on screen). Cursor-paginated: `?cursor=`,
+  `?limit=` (default 20, max 100).
+
 ## Alerting (PING-011)
 
 Alerts are delivered through the `alert.Channel` abstraction (`backend/alert`).

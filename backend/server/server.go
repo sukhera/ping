@@ -103,6 +103,7 @@ func New(addr string, deps Deps) *http.Server {
 			r.Post("/{id}/mute", mh.mute)
 			r.Post("/{id}/unmute", mh.unmute)
 			r.Get("/{id}/events", mh.listMonitorEvents)
+			r.Get("/{id}/checkins", mh.listMonitorCheckins)
 		})
 	})
 

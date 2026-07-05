@@ -120,4 +120,69 @@ describe("usePauseMonitor", () => {
       expect(list.result.current.data?.monitors[0].display_state).toBe("paused"),
     );
   });
+
+  it("patches the cache optimistically before the network response arrives", async () => {
+    const initial = monitorFixture({ display_state: "up" });
+    let resolvePause: (() => void) | undefined;
+    const pauseGate = new Promise<void>((resolve) => {
+      resolvePause = resolve;
+    });
+
+    server.use(
+      http.get(`${BASE}/api/v1/monitors`, () => HttpResponse.json({ monitors: [initial] })),
+      http.post(`${BASE}/api/v1/monitors/m1/pause`, async () => {
+        await pauseGate;
+        return HttpResponse.json(monitorFixture({ display_state: "paused", paused_at: "2026-01-02T00:00:00Z" }));
+      }),
+    );
+    const { useMonitors, usePauseMonitor } = await freshHooks();
+    const w = wrapper();
+
+    const list = renderHook(() => useMonitors({}), { wrapper: w });
+    await waitFor(() => expect(list.result.current.data?.monitors[0].display_state).toBe("up"));
+
+    const mutation = renderHook(() => usePauseMonitor(), { wrapper: w });
+    mutation.result.current.mutate("m1");
+
+    // Cache reflects "paused" immediately, before the gated response resolves.
+    await waitFor(() => expect(list.result.current.data?.monitors[0].display_state).toBe("paused"));
+    expect(mutation.result.current.isSuccess).toBe(false);
+
+    resolvePause?.();
+    await waitFor(() => expect(mutation.result.current.isSuccess).toBe(true));
+  });
+
+  it("rolls back the optimistic patch when the mutation fails", async () => {
+    const initial = monitorFixture({ display_state: "up" });
+    let rejectPause: (() => void) | undefined;
+    const pauseGate = new Promise<void>((_resolve, reject) => {
+      rejectPause = () => reject(new Error("boom"));
+    });
+
+    server.use(
+      http.get(`${BASE}/api/v1/monitors`, () => HttpResponse.json({ monitors: [initial] })),
+      http.post(`${BASE}/api/v1/monitors/m1/pause`, async () => {
+        await pauseGate.catch(() => {});
+        return HttpResponse.json({ error: "boom" }, { status: 500 });
+      }),
+    );
+    const { useMonitors, usePauseMonitor } = await freshHooks();
+    const w = wrapper();
+
+    const list = renderHook(() => useMonitors({}), { wrapper: w });
+    await waitFor(() => expect(list.result.current.data?.monitors[0].display_state).toBe("up"));
+
+    const mutation = renderHook(() => usePauseMonitor(), { wrapper: w });
+    mutation.result.current.mutate("m1");
+
+    // Optimistic patch applies immediately, before the gated response settles.
+    await waitFor(() => expect(list.result.current.data?.monitors[0].display_state).toBe("paused"));
+    expect(mutation.result.current.isError).toBe(false);
+
+    rejectPause?.();
+
+    // ...then rolls back once the mutation errors.
+    await waitFor(() => expect(mutation.result.current.isError).toBe(true));
+    await waitFor(() => expect(list.result.current.data?.monitors[0].display_state).toBe("up"));
+  });
 });
